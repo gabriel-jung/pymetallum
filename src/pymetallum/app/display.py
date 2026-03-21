@@ -570,13 +570,13 @@ def select_from_list(results: list[dict]) -> dict | None:
         SUMMARY[item["_type"]](item)
 
     num = len(results)
-    console.print(f"\n[dim]1-{num} to select | 0 to cancel | Ctrl+C to quit[/dim]")
+    console.print(f"\n[dim]1-{num} to select | Ctrl+C to quit[/dim]")
     while True:
         try:
-            choice = int(console.input("[bold]>[/bold] "))
-            if choice == 0:
-                console.print("[dim]Selection cancelled.[/dim]")
-                return None
+            raw = console.input("[bold]>[/bold] ").strip()
+            if not raw:
+                continue
+            choice = int(raw)
             if 1 <= choice <= num:
                 return results[choice - 1]
             console.print(

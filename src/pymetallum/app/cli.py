@@ -12,11 +12,21 @@ Usage::
     metallum --band Summoning -s    # show all matches (fuzzy)
     metallum --band Summoning --full     # show all sections at once
     metallum --band Summoning --json     # output as JSON
+    metallum --recent                    # recently added/modified bands
+    metallum --new                       # only newly created bands
+    metallum --modified                  # only recently modified bands
+    metallum --label --new               # newly created labels
+    metallum --recent --month 2026-02    # specific month
+    metallum --new --from 2026-03-20     # new bands since a specific date
+    metallum --upcoming                  # upcoming album releases
+    metallum --upcoming --from 2026-04-01 --to 2026-06-01
 """
 
 import argparse
 import json
+import re
 import sys
+from datetime import date, datetime
 
 from loguru import logger
 
@@ -66,7 +76,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "  metallum --band --country NO --status active\n"
             "  metallum --band Summoning -s    show all matches (fuzzy)\n"
             "  metallum --band Summoning --full     all sections at once\n"
-            "  metallum --band Summoning --json     output as JSON"
+            "  metallum --band Summoning --json     output as JSON\n"
+            "  metallum --recent                    recently added/modified bands\n"
+            "  metallum --new                       only newly created bands\n"
+            "  metallum --modified                  only recently modified bands\n"
+            "  metallum --label --new               newly created labels\n"
+            "  metallum --recent --month 2026-02    specific month\n"
+            "  metallum --new --from 2026-03-20     new bands since a date\n"
+            "  metallum --upcoming                  upcoming album releases\n"
+            "  metallum --upcoming --from 2026-04-01 --to 2026-06-01"
         ),
         formatter_class=argparse.RawTextHelpFormatter,
     )
@@ -102,6 +120,48 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lyrics", type=str, help="Search songs by lyrics content")
 
     parser.add_argument(
+        "--random",
+        action="store_true",
+        help="Open a random band page",
+    )
+    parser.add_argument(
+        "--recent",
+        action="store_true",
+        help="Show recently added/modified entries (default: bands, or use --label)",
+    )
+    parser.add_argument(
+        "--new",
+        action="store_true",
+        help="Show only newly created entries (implies --recent)",
+    )
+    parser.add_argument(
+        "--modified",
+        action="store_true",
+        help="Show only recently modified entries (implies --recent)",
+    )
+    parser.add_argument(
+        "--upcoming",
+        action="store_true",
+        help="Show upcoming album releases",
+    )
+    parser.add_argument(
+        "--month",
+        type=str,
+        help="Month for --recent (YYYY-MM format, default: current month)",
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_date",
+        type=str,
+        help="Start date (YYYY-MM-DD) for --recent or --upcoming",
+    )
+    parser.add_argument(
+        "--to",
+        dest="to_date",
+        type=str,
+        help="End date (YYYY-MM-DD) for --recent or --upcoming",
+    )
+    parser.add_argument(
         "-s",
         "--search",
         action="store_true",
@@ -114,7 +174,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
+    parser.add_argument("--version", action="version", version="%(prog)s 0.2.0")
 
     return parser
 
@@ -222,6 +282,64 @@ def _has_filters(args) -> bool:
     return any(getattr(args, f, None) for f in FILTER_FLAGS)
 
 
+def _months_in_range(from_date: date, to_date: date) -> list[str]:
+    """Return list of YYYY-MM strings covering the date range."""
+    months = []
+    current = from_date.replace(day=1)
+    while current <= to_date:
+        months.append(current.strftime("%Y-%m"))
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+    return months
+
+
+def _parse_date(date_str: str) -> date | None:
+    """Parse a YYYY-MM-DD date string."""
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _extract_date(item: dict, year: int | None = None) -> date | None:
+    """Extract the date from an item's added_on or modified_on field.
+
+    Metal Archives archive dates use the format "Mar 2nd, 05:43" (no year).
+    The *year* must be supplied from the month context (e.g. "2025-03" → 2025).
+    """
+
+    for key in ("added_on", "modified_on"):
+        val = item.get(key)
+        if not val:
+            continue
+        # Try ISO format first (YYYY-MM-DD)
+        try:
+            return datetime.strptime(val[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            pass
+        # Metal Archives format: "Mar 2nd, 05:43"
+        m = re.match(r"([A-Z][a-z]{2})\s+(\d+)\w*,", val)
+        if m and year:
+            try:
+                month_num = datetime.strptime(m.group(1), "%b").month
+                day = int(m.group(2))
+                return date(year, month_num, day)
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+def _list_fetcher(items: list):
+    """Wrap a list as a fetch_page(start, count) -> (page, total) callable."""
+
+    def fetch_page(start, count):
+        return items[start : start + count], len(items)
+
+    return fetch_page
+
+
 def _strip_bytes(obj):
     """Recursively strip bytes values from dicts for JSON serialization."""
     if isinstance(obj, dict):
@@ -313,44 +431,50 @@ def _run_advanced_search(navigator, entity_type, filters, args):
         )
         hints = []
         if start > 0:
+            hints.append("[bold]f[/bold]irst")
             hints.append("[bold]p[/bold]rev")
         if end < total:
             hints.append("[bold]n[/bold]ext")
+            hints.append("[bold]l[/bold]ast")
         hints.append("number to select")
-        hints.append("0 to cancel")
         console.print(f"[dim]{' | '.join(hints)}[/dim]")
+        console.print()
+        console.print("[dim]Ctrl+C to quit[/dim]")
 
         try:
             raw = console.input("[bold]>[/bold] ").strip().lower()
         except (KeyboardInterrupt, EOFError):
             return
 
+        if not raw:
+            continue
+
         if raw == "n" and end < total:
-            start += page_size
-            with console.status("Loading next page..."):
+            new_start = start + page_size
+        elif raw == "l" and end < total:
+            new_start = max(0, total - page_size)
+        elif raw == "p" and start > 0:
+            new_start = max(0, start - page_size)
+        elif raw == "f" and start > 0:
+            new_start = 0
+        else:
+            new_start = None
+
+        if new_start is not None:
+            with console.status("Loading..."):
                 results, total = api.advanced_search(
-                    start=start, count=page_size, **filters
+                    start=new_start, count=page_size, **filters
                 )
             if not results:
                 console.print("[dim]No more results.[/dim]")
                 return
-            continue
-
-        if raw == "p" and start > 0:
-            start = max(0, start - page_size)
-            with console.status("Loading previous page..."):
-                results, total = api.advanced_search(
-                    start=start, count=page_size, **filters
-                )
+            start = new_start
             continue
 
         try:
             choice = int(raw)
         except ValueError:
             continue
-
-        if choice == 0:
-            return
 
         idx = choice - 1 - start
         if 0 <= idx < len(results):
@@ -377,6 +501,331 @@ def _run_advanced_search(navigator, entity_type, filters, args):
 
         navigator.navigate(entity)
         return
+
+
+def _fetch_recent_filtered(api, mode, months, from_d, to_d):
+    """Fetch and date-filter recent entries across one or more months."""
+    all_items = []
+    for m in months:
+        year = int(m.split("-")[0])
+        batch = (
+            api.fetch_recently_created(m)
+            if mode == "created"
+            else api.fetch_recently_modified(m)
+        )
+        if from_d or to_d:
+            for item in batch:
+                d = _extract_date(item, year=year)
+                if not d:
+                    continue
+                if from_d and d < from_d:
+                    continue
+                if to_d and d > to_d:
+                    continue
+                all_items.append(item)
+        else:
+            all_items.extend(batch)
+    return all_items
+
+
+def _run_recent(navigator, entity_type, args):
+    """Show recently created/modified bands or labels."""
+    api = navigator.apis[entity_type]
+
+    from_d = _parse_date(args.from_date) if args.from_date else None
+    to_d = _parse_date(args.to_date) if args.to_date else None
+
+    if args.from_date and not from_d:
+        console.print("[red]Invalid --from date. Use YYYY-MM-DD format.[/red]")
+        return
+    if args.to_date and not to_d:
+        console.print("[red]Invalid --to date. Use YYYY-MM-DD format.[/red]")
+        return
+
+    # Determine which modes to show
+    if args.new and not args.modified:
+        requested_modes = ["created"]
+    elif args.modified and not args.new:
+        requested_modes = ["modified"]
+    else:
+        requested_modes = ["created", "modified"]
+
+    has_date_filter = from_d or to_d
+
+    if has_date_filter and args.month:
+        console.print(
+            "[red]Cannot use --month with --from/--to. Use one or the other.[/red]"
+        )
+        return
+
+    if has_date_filter:
+        # Date-filtered mode: fetch full months, filter client-side
+        if not from_d:
+            from_d = date.today().replace(day=1)
+        if not to_d:
+            to_d = date.today()
+        months = _months_in_range(from_d, to_d)
+        date_desc = f"{from_d} to {to_d}"
+
+        fetched = {}
+        with console.status(f"Fetching {entity_type}s ({date_desc})..."):
+            for mode in requested_modes:
+                fetched[mode] = _fetch_recent_filtered(api, mode, months, from_d, to_d)
+
+        if args.json:
+            print(json.dumps(fetched, indent=2))
+            return
+
+        mode_entries = [
+            (m, _mode_label(m, entity_type, len(fetched[m])), fetched[m])
+            for m in requested_modes
+        ]
+
+        # Skip menu if only one mode
+        if len(mode_entries) == 1:
+            _, label, items = mode_entries[0]
+            if not items:
+                console.print("[yellow]No items found.[/yellow]")
+                return
+            _browse_paginated(
+                navigator,
+                label,
+                args,
+                fetch_page=_list_fetcher(items),
+            )
+            return
+
+        _recent_menu(navigator, mode_entries, args)
+    else:
+        # Month mode: server-side pagination
+        month = args.month
+
+        totals = {}
+        with console.status(
+            f"Fetching recent {entity_type}s ({month or 'this month'})..."
+        ):
+            for mode in requested_modes:
+                _, totals[mode] = api.fetch_recent_page(mode, month)
+
+        if args.json:
+            fetched = {}
+            with console.status("Fetching all results..."):
+                for mode in requested_modes:
+                    fetched[mode] = (
+                        api.fetch_recently_created(month)
+                        if mode == "created"
+                        else api.fetch_recently_modified(month)
+                    )
+            print(json.dumps(fetched, indent=2))
+            return
+
+        mode_entries = [
+            (
+                m,
+                _mode_label(m, entity_type, totals[m]),
+                lambda s, c, m=m: api.fetch_recent_page(m, month, s, c),
+            )
+            for m in requested_modes
+        ]
+
+        # Skip menu if only one mode
+        if len(mode_entries) == 1:
+            _, label, fetch_fn = mode_entries[0]
+            _browse_paginated(
+                navigator,
+                label,
+                args,
+                fetch_page=fetch_fn,
+            )
+            return
+
+        _recent_menu(navigator, mode_entries, args)
+
+
+def _mode_label(mode: str, entity_type: str, count: int) -> str:
+    prefix = "New" if mode == "created" else "Modified"
+    return f"{prefix} {entity_type}s ({count})"
+
+
+def _recent_menu(navigator, mode_entries, args):
+    """Menu to choose between created/modified, then browse.
+
+    mode_entries is a list of tuples. Each tuple contains:
+      - (mode, label, fetch_page_fn)  — with a pre-built fetch_page callable
+      - or (mode, label, items)       — with pre-fetched items (date-filtered)
+    """
+    while True:
+        console.print()
+        for i, entry in enumerate(mode_entries, 1):
+            console.print(f"  [bold cyan]\\[{i}][/bold cyan] {entry[1]}")
+        console.print()
+        console.print("  [dim]Ctrl+C to quit[/dim]")
+
+        try:
+            raw = console.input("\n[bold]Choose:[/bold] ").strip()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if not raw:
+            continue
+
+        try:
+            choice = int(raw)
+        except ValueError:
+            continue
+
+        if 1 <= choice <= len(mode_entries):
+            entry = mode_entries[choice - 1]
+            label = entry[1]
+            data = entry[2]
+
+            # data is either a fetch_page callable or a pre-fetched list
+            if callable(data):
+                fetch_page = data
+            else:
+                items = data
+                if not items:
+                    console.print("[yellow]No items found.[/yellow]")
+                    continue
+                fetch_page = _list_fetcher(items)
+
+            _browse_paginated(
+                navigator,
+                label,
+                args,
+                fetch_page=fetch_page,
+                can_go_back=True,
+            )
+
+
+def _run_upcoming(navigator, args):
+    """Show upcoming album releases."""
+    album_api = navigator.apis["album"]
+    from_date = args.from_date
+    to_date = args.to_date
+
+    with console.status("Fetching upcoming releases..."):
+        first_page, total = album_api.fetch_upcoming_page(
+            from_date=from_date, to_date=to_date
+        )
+
+    if not first_page:
+        console.print("[yellow]No upcoming releases found.[/yellow]")
+        return
+
+    if args.json:
+        with console.status("Fetching all results..."):
+            releases = album_api.fetch_upcoming(from_date=from_date, to_date=to_date)
+        print(json.dumps(releases, indent=2))
+        return
+
+    _browse_paginated(
+        navigator,
+        f"Upcoming releases ({total})",
+        args,
+        fetch_page=lambda s, c: album_api.fetch_upcoming_page(
+            s, c, from_date=from_date, to_date=to_date
+        ),
+    )
+
+
+def _browse_paginated(navigator, title, args, fetch_page, can_go_back=False):
+    """Paginated browsing with server-side pagination.
+
+    fetch_page(start, count) -> (results, total)
+    """
+    page_size = 25
+    start = 0
+
+    results, total = fetch_page(start, page_size)
+    if not results:
+        console.print("[yellow]No items found.[/yellow]")
+        return
+
+    while True:
+        end = min(start + len(results), total)
+
+        console.print(f"\n[bold]{title}[/bold]")
+        for i, item in enumerate(results, start + 1):
+            console.print(f"  [bold cyan]\\[{i}][/bold cyan] ", end="")
+            item_type = item.get("_type", "band")
+            SUMMARY.get(item_type, SUMMARY["band"])(item)
+
+        console.print(f"\n[dim]Showing {start + 1}-{end} of {total}[/dim]")
+        hints = []
+        if start > 0:
+            hints.append("[bold]f[/bold]irst")
+            hints.append("[bold]p[/bold]rev")
+        if end < total:
+            hints.append("[bold]n[/bold]ext")
+            hints.append("[bold]l[/bold]ast")
+        hints.append("number to select")
+        console.print(f"[dim]{' | '.join(hints)}[/dim]")
+        console.print()
+        exit_hints = []
+        if can_go_back:
+            exit_hints.append("[bold]0[/bold] to go back")
+        exit_hints.append("Ctrl+C to quit")
+        console.print(f"[dim]{' | '.join(exit_hints)}[/dim]")
+
+        try:
+            raw = console.input("[bold]>[/bold] ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            return
+
+        if not raw:
+            continue
+
+        if raw == "0" and can_go_back:
+            return
+
+        if raw == "n" and end < total:
+            new_start = start + page_size
+        elif raw == "l" and end < total:
+            new_start = max(0, total - page_size)
+        elif raw == "p" and start > 0:
+            new_start = max(0, start - page_size)
+        elif raw == "f" and start > 0:
+            new_start = 0
+        else:
+            new_start = None
+
+        if new_start is not None:
+            with console.status("Loading..."):
+                results, total = fetch_page(new_start, page_size)
+            if not results:
+                console.print("[dim]No more results.[/dim]")
+                return
+            start = new_start
+            continue
+
+        try:
+            choice = int(raw)
+        except ValueError:
+            continue
+
+        idx = choice - 1 - start
+        if 0 <= idx < len(results):
+            selected = results[idx]
+            selected_type = selected.get("_type")
+            selected_url = selected.get("url")
+            if not selected_type or not selected_url:
+                console.print("[dim]This item is not navigable.[/dim]")
+                continue
+
+            get_kwargs = {"full": True} if selected_type == "band" and args.full else {}
+            with console.status("Fetching details..."):
+                entity = navigator.apis[selected_type].get(selected_url, **get_kwargs)
+            if not entity:
+                console.print("[red]Could not retrieve details.[/red]")
+                continue
+            if args.full:
+                display_details(entity)
+                return
+            navigator.navigate(entity)
+            return
+        else:
+            console.print("[red]Invalid choice.[/red]")
 
 
 def main():
@@ -408,7 +857,37 @@ def main():
         navigator = Navigator(client)
 
         try:
-            if has_filters:
+            if args.random:
+                with console.status("Fetching random band..."):
+                    band = navigator.apis["band"].get_random(full=args.full)
+                if not band:
+                    console.print("[red]Could not fetch random band.[/red]")
+                    return
+                if args.json:
+                    print(json.dumps(_strip_bytes(band), indent=2))
+                    return
+                if args.full:
+                    display_details(band)
+                    return
+                navigator.navigate(band)
+                return
+
+            elif args.recent or args.new or args.modified:
+                recent_type = entity_type or "band"
+                if recent_type not in ("band", "label"):
+                    console.print(
+                        "[red]--recent is only available for bands and labels. "
+                        "Use --band --recent or --label --recent.[/red]"
+                    )
+                    return
+                _run_recent(navigator, recent_type, args)
+                return
+
+            elif args.upcoming:
+                _run_upcoming(navigator, args)
+                return
+
+            elif has_filters:
                 # Advanced search mode
                 search_type = entity_type or "band"
 

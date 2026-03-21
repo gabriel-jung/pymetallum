@@ -85,11 +85,42 @@ lets you explore sections — discography, members, tracklist, reviews, similar
 artists, lyrics, and more. Select any linked entity (a band member, an album,
 a label) to navigate to it. Press `0` to go back.
 
+### Browse recent & upcoming
+
+```bash
+# recently added/modified bands (this month)
+metallum --recent
+metallum --new                       # only newly created
+metallum --modified                  # only recently modified
+
+# labels
+metallum --label --recent
+metallum --label --new
+
+# specific month
+metallum --new --month 2025-01
+
+# date range (fetches full months then filters — slow for wide ranges)
+metallum --new --from 2025-03-01
+metallum --modified --from 2025-02-15 --to 2025-03-15
+
+# upcoming album releases
+metallum --upcoming
+metallum --upcoming --from 2025-04-01 --to 2025-06-01
+```
+
+### Random band
+
+```bash
+metallum --random
+```
+
 ### Output modes
 
 ```bash
 metallum --band Summoning --full    # print all sections, no interaction
 metallum --band Summoning --json    # dump full entity data as JSON
+metallum --upcoming --json          # works with any mode
 metallum -v ...                     # enable debug logging
 ```
 
@@ -101,7 +132,7 @@ iTerm2 or Kitty image protocol (iTerm2, Kitty, WezTerm, Mintty).
 ## Library
 
 ```python
-from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI
+from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI, LabelAPI
 
 with MetalArchivesClient() as client:
     bands = BandAPI(client)
@@ -110,8 +141,20 @@ with MetalArchivesClient() as client:
 
     results, total = bands.advanced_search(genre="black metal", country="AT")
 
+    # random band
+    band = bands.get_random()
+
+    # recent/upcoming
+    new_bands = bands.fetch_recently_created("2025-03")
+    modified_bands = bands.fetch_recently_modified("2025-03")
+    page, total = bands.fetch_recent_page("created", "2025-03", start=0, count=25)
+
     albums = AlbumAPI(client)
     album = albums.get(band["discography"][0]["url"])
+    upcoming = albums.fetch_upcoming(from_date="2025-04-01", to_date="2025-06-01")
+
+    labels = LabelAPI(client)
+    new_labels = labels.fetch_recently_created("2025-03")
 ```
 
 All data is returned as plain dicts. The `core` module has no terminal

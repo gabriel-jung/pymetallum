@@ -108,9 +108,12 @@ class Navigator:
                     f"  [bold cyan]\\[{idx}][/bold cyan] {link_label} [dim]→[/dim]"
                 )
 
-            back_label = "Back" if len(self._history) > 1 else "Exit"
-            console.print(f"  [bold cyan]\\[0][/bold cyan] {back_label}")
-            console.print("  [dim]Ctrl+C to quit[/dim]")
+            console.print()
+            exit_hints = []
+            if len(self._history) > 1:
+                exit_hints.append("[bold]0[/bold] to go back")
+            exit_hints.append("Ctrl+C to quit")
+            console.print(f"  [dim]{' | '.join(exit_hints)}[/dim]")
 
             try:
                 raw = console.input("\n[bold]Choose:[/bold] ").strip()
@@ -118,14 +121,14 @@ class Navigator:
                 raise _QuitSignal()
 
             if not raw:
-                break
+                continue
 
             try:
                 choice = int(raw)
             except ValueError:
                 continue
 
-            if choice == 0:
+            if choice == 0 and len(self._history) > 1:
                 break
 
             total_sections = len(sections)
@@ -191,9 +194,10 @@ class Navigator:
             if page < total_pages - 1:
                 hints.append("[bold]n[/bold]ext page")
                 hints.append("[bold]l[/bold]ast page")
-            hints.append("Enter to go back")
 
             console.print(f"[dim]{' | '.join(hints)}[/dim]")
+            console.print()
+            console.print("[dim][bold]0[/bold] to go back | Ctrl+C to quit[/dim]")
 
             try:
                 raw = console.input("[bold]>[/bold] ").strip()
@@ -201,9 +205,12 @@ class Navigator:
                 raise _QuitSignal()
 
             if not raw:
-                return
+                continue
 
             raw = raw.lower()
+
+            if raw == "0":
+                return
 
             new_page = page
             if raw == "n" and page < total_pages - 1:

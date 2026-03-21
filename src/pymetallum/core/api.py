@@ -29,6 +29,11 @@ from .utils import (
 )
 
 
+def _html_text(s: str) -> str:
+    """Extract and normalize text from an HTML fragment (strips tags and entities)."""
+    return normalize_text(BeautifulSoup(s, "html.parser").get_text())
+
+
 class BaseAPI:
     """Base class providing shared fetch/search/parse helpers for all entity APIs.
 
@@ -342,6 +347,28 @@ class BandAPI(BaseAPI):
         "bandLabelName": "",
     }
 
+    def get_random(self, full: bool = False, **kwargs) -> dict | None:
+        """Fetch a random band from Metal Archives.
+
+        Uses the ``/band/random`` endpoint which redirects to a random band
+        page. Parses it the same way as ``get()``.
+
+        Args:
+            full: If True, eagerly fetch description and similar artists.
+            **kwargs: Forwarded to the parser constructor.
+
+        Returns:
+            Band dict, or None if the request failed.
+        """
+        url = f"{self._base_url}/band/random"
+        result = self._client.get_with_url(url)
+        if not result:
+            return None
+        html, final_url = result
+        soup = BeautifulSoup(html, "html.parser")
+        band = BandPageParser(soup, final_url, **kwargs).parse()
+        return self._enrich_band(band, full)
+
     def get(self, band_url: str, full: bool = False, **kwargs) -> dict | None:
         """Fetch and parse a band's detail page.
 
@@ -362,6 +389,10 @@ class BandAPI(BaseAPI):
             and similar artists. None if the page could not be fetched.
         """
         band = self._fetch_and_parse(band_url, BandPageParser, **kwargs)
+        return self._enrich_band(band, full)
+
+    def _enrich_band(self, band: dict | None, full: bool = False) -> dict | None:
+        """Add discography, logo, and optional extras to a parsed band dict."""
         if not band:
             return None
 
@@ -590,7 +621,6 @@ class BandAPI(BaseAPI):
             return None
 
         band_url = name_link.get("href", "")
-        status_soup = BeautifulSoup(row[3], "html.parser")
 
         return {
             "_type": "band",
@@ -599,7 +629,132 @@ class BandAPI(BaseAPI):
             "id": extract_id_from_url(band_url),
             "country": normalize_text(row[1]),
             "genre": normalize_text(row[2]),
-            "status": normalize_text(status_soup.get_text()),
+            "status": _html_text(row[3]),
+        }
+
+    def fetch_recently_created(
+        self, month: str | None = None, batch_size: int = 200
+    ) -> list[dict[str, Any]]:
+        """Fetch bands recently added to Metal Archives for a given month.
+
+        Uses the ``/archives/ajax-band-list/.../by/created`` endpoint.
+
+        Args:
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            batch_size: Page size (server caps at 200).
+
+        Returns:
+            List of band dicts with ``name``, ``url``, ``id``, ``country``,
+            ``genre``, and ``added_on`` date.
+        """
+        return self._fetch_band_archive("created", month, batch_size)
+
+    def fetch_recently_modified(
+        self, month: str | None = None, batch_size: int = 200
+    ) -> list[dict[str, Any]]:
+        """Fetch bands recently modified on Metal Archives for a given month.
+
+        Uses the ``/archives/ajax-band-list/.../by/modified`` endpoint.
+
+        Args:
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            batch_size: Page size (server caps at 200).
+
+        Returns:
+            List of band dicts with ``name``, ``url``, ``id``, ``country``,
+            ``genre``, and ``modified_on`` date.
+        """
+        return self._fetch_band_archive("modified", month, batch_size)
+
+    def fetch_recent_page(
+        self,
+        mode: str = "created",
+        month: str | None = None,
+        start: int = 0,
+        count: int = 200,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch a single page of recently created/modified bands.
+
+        Args:
+            mode: ``"created"`` or ``"modified"``.
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            start: Offset into results (for pagination).
+            count: Page size (server caps at 200).
+
+        Returns:
+            Tuple of (list of band dicts, total matching records).
+        """
+        if month is None:
+            from datetime import date
+
+            month = date.today().strftime("%Y-%m")
+
+        url = (
+            f"{self._base_url}/archives/ajax-band-list"
+            f"/selection/{month}/by/{mode}/json/1"
+        )
+        date_key = "added_on" if mode == "created" else "modified_on"
+        params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": count}
+        data = self._client.get_json(url, params, crawl=True)
+        if not data:
+            return [], 0
+        rows = data.get("aaData", [])
+        total = data.get("iTotalRecords", 0)
+        results = [b for row in rows if (b := self._parse_archive_row(row, date_key))]
+        return results, total
+
+    def _fetch_band_archive(
+        self, mode: str, month: str | None, batch_size: int
+    ) -> list[dict[str, Any]]:
+        """Fetch all bands from the archives listing (created or modified).
+
+        Args:
+            mode: Either ``"created"`` or ``"modified"``.
+            month: Month in ``YYYY-MM`` format.
+            batch_size: Page size (server caps at 200).
+
+        Returns:
+            List of band dicts.
+        """
+        all_bands = []
+        start = 0
+        while True:
+            results, total = self.fetch_recent_page(mode, month, start, batch_size)
+            if start == 0:
+                logger.info(f"Fetching {total} {mode} bands for {month}")
+            if not results:
+                break
+            all_bands.extend(results)
+            if len(all_bands) >= total:
+                break
+            start += batch_size
+        logger.success(f"Completed: {len(all_bands)} {mode} bands for {month}")
+        return all_bands
+
+    def _parse_archive_row(
+        self, row: list[str], date_key: str
+    ) -> dict[str, Any] | None:
+        """Parse a row from the band archive listing (6 columns).
+
+        Columns: [grouping (hidden), band_link, country_link, genre, date, user].
+        """
+        if len(row) < 5:
+            return None
+
+        band_link = parse_link(row[1])
+        if not band_link:
+            return None
+
+        band_url = band_link.get("href", "")
+
+        return {
+            "_type": "band",
+            "name": normalize_text(band_link.text),
+            "url": band_url,
+            "id": extract_id_from_url(band_url),
+            "country": _html_text(row[2]),
+            "genre": normalize_text(row[3]),
+            date_key: normalize_text(row[4]),
         }
 
 
@@ -700,6 +855,112 @@ class AlbumAPI(BaseAPI):
         if album and album.get("cover_url"):
             album["_cover_data"] = self._client.get_bytes(album["cover_url"])
         return album
+
+    def fetch_upcoming_page(
+        self,
+        start: int = 0,
+        count: int = 100,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        include_versions: bool = False,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch a single page of upcoming album releases.
+
+        Args:
+            start: Offset into results (for pagination).
+            count: Page size (server caps at 100).
+            from_date: Start date in ``YYYY-MM-DD`` format (default: today).
+            to_date: End date in ``YYYY-MM-DD`` format (default: open-ended).
+            include_versions: Whether to include re-releases/versions.
+
+        Returns:
+            Tuple of (list of album dicts, total matching records).
+        """
+        url = f"{self._base_url}/release/ajax-upcoming/json/1"
+        extra_params = {"includeVersions": 1 if include_versions else 0}
+        if from_date:
+            extra_params["fromDate"] = from_date
+        if to_date:
+            extra_params["toDate"] = to_date
+
+        params = {
+            "sEcho": 0,
+            "iDisplayStart": start,
+            "iDisplayLength": count,
+            **extra_params,
+        }
+        data = self._client.get_json(url, params, crawl=True)
+        if not data:
+            return [], 0
+        rows = data.get("aaData", [])
+        total = data.get("iTotalRecords", 0)
+        results = [r for row in rows if (r := self._parse_upcoming_row(row))]
+        return results, total
+
+    def fetch_upcoming(
+        self,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        include_versions: bool = False,
+        batch_size: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch all upcoming album releases from Metal Archives.
+
+        Args:
+            from_date: Start date in ``YYYY-MM-DD`` format (default: today).
+            to_date: End date in ``YYYY-MM-DD`` format (default: open-ended).
+            include_versions: Whether to include re-releases/versions.
+            batch_size: Page size (server caps at 100).
+
+        Returns:
+            List of album dicts.
+        """
+        all_releases = []
+        start = 0
+        while True:
+            results, total = self.fetch_upcoming_page(
+                start, batch_size, from_date, to_date, include_versions
+            )
+            if start == 0:
+                logger.info(f"Fetching {total} upcoming releases")
+            if not results:
+                break
+            all_releases.extend(results)
+            if len(all_releases) >= total:
+                break
+            start += batch_size
+        logger.success(f"Completed: {len(all_releases)} upcoming releases")
+        return all_releases
+
+    @staticmethod
+    def _parse_upcoming_row(row: list[str]) -> dict[str, Any] | None:
+        """Parse a row from the upcoming releases listing (6 columns).
+
+        Columns: [band_link, album_link, type, genre, release_date, added_date].
+        """
+        if len(row) < 5:
+            return None
+
+        band_link = parse_link(row[0])
+        album_link = parse_link(row[1])
+        if not band_link or not album_link:
+            return None
+
+        album_url = album_link.get("href", "")
+
+        return {
+            "_type": "album",
+            "name": normalize_text(album_link.text),
+            "band": normalize_text(band_link.text),
+            "band_url": band_link.get("href", ""),
+            "band_id": extract_id_from_url(band_link.get("href", "")),
+            "url": album_url,
+            "id": extract_id_from_url(album_url),
+            "album_type": normalize_text(row[2]) if len(row) > 2 else "",
+            "genre": normalize_text(row[3]) if len(row) > 3 else "",
+            "release_date": normalize_text(row[4]) if len(row) > 4 else "",
+            "added_on": normalize_text(row[5]) if len(row) > 5 else "",
+        }
 
 
 class ArtistAPI(BaseAPI):
@@ -848,6 +1109,203 @@ class LabelAPI(BaseAPI):
             parsed_rows.append(parsed_row)
 
         return parsed_rows
+
+    def fetch_label_list_letter(
+        self, letter: str, batch_size: int = 200, verbose: bool = True
+    ) -> list[dict[str, Any]]:
+        """Fetch all labels starting with a given letter from the alphabetical listing.
+
+        Uses the paginated ``/label/ajax-list/`` endpoint.
+
+        Args:
+            letter: Single letter (A-Z), ``#`` for numbers, or ``~`` for
+                non-Latin characters.
+            batch_size: Number of labels to request per page (server caps at 200).
+            verbose: If True, log progress updates.
+
+        Returns:
+            List of label dicts with ``name``, ``url``, ``id``, ``country``,
+            ``status``, and ``specialisation``.
+        """
+        all_labels = []
+        start = 0
+        url = f"{self._base_url}/label/ajax-list/l/{letter}/json/1"
+        total_records = None
+
+        while True:
+            params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
+            data = self._client.get_json(url, params, crawl=True)
+            if not data:
+                break
+
+            rows = data.get("aaData", [])
+            total_records = data.get("iTotalRecords", 0)
+
+            if start == 0 and verbose:
+                logger.info(f"Fetching {total_records} labels for letter: {letter}")
+
+            if not rows:
+                break
+
+            for row in rows:
+                label = self._parse_label_list_row(row)
+                if label:
+                    all_labels.append(label)
+
+            if verbose and len(all_labels) < total_records:
+                logger.debug(f"  Progress: {len(all_labels)}/{total_records}")
+
+            if len(all_labels) >= total_records:
+                break
+
+            start += batch_size
+
+        if verbose:
+            logger.success(f"Completed {letter}: {len(all_labels)} labels")
+
+        return all_labels
+
+    def _parse_label_list_row(self, row: list[str]) -> dict[str, Any] | None:
+        """Parse a row from the label alphabetical listing (7 columns).
+
+        Columns: [edit_link, label_link, specialisation, status, country, ?, ?].
+        """
+        if len(row) < 5:
+            return None
+
+        label_link = parse_link(row[1])
+        if not label_link:
+            return None
+
+        label_url = label_link.get("href", "")
+
+        return {
+            "_type": "label",
+            "name": normalize_text(label_link.text),
+            "url": label_url,
+            "id": extract_id_from_url(label_url),
+            "country": _html_text(row[4]),
+            "status": _html_text(row[3]),
+            "specialisation": _html_text(row[2]),
+        }
+
+    def fetch_recently_created(
+        self, month: str | None = None, batch_size: int = 200
+    ) -> list[dict[str, Any]]:
+        """Fetch labels recently added to Metal Archives for a given month.
+
+        Uses the ``/archives/ajax-label-list/.../by/created`` endpoint.
+
+        Args:
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            batch_size: Page size (server caps at 200).
+
+        Returns:
+            List of label dicts with ``name``, ``url``, ``id``, ``country``,
+            ``status``, and ``added_on`` date.
+        """
+        return self._fetch_label_archive("created", month, batch_size)
+
+    def fetch_recently_modified(
+        self, month: str | None = None, batch_size: int = 200
+    ) -> list[dict[str, Any]]:
+        """Fetch labels recently modified on Metal Archives for a given month.
+
+        Uses the ``/archives/ajax-label-list/.../by/modified`` endpoint.
+
+        Args:
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            batch_size: Page size (server caps at 200).
+
+        Returns:
+            List of label dicts with ``name``, ``url``, ``id``, ``country``,
+            ``status``, and ``modified_on`` date.
+        """
+        return self._fetch_label_archive("modified", month, batch_size)
+
+    def fetch_recent_page(
+        self,
+        mode: str = "created",
+        month: str | None = None,
+        start: int = 0,
+        count: int = 200,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Fetch a single page of recently created/modified labels.
+
+        Args:
+            mode: ``"created"`` or ``"modified"``.
+            month: Month in ``YYYY-MM`` format. Defaults to current month.
+            start: Offset into results (for pagination).
+            count: Page size (server caps at 200).
+
+        Returns:
+            Tuple of (list of label dicts, total matching records).
+        """
+        if month is None:
+            from datetime import date
+
+            month = date.today().strftime("%Y-%m")
+
+        url = (
+            f"{self._base_url}/archives/ajax-label-list"
+            f"/selection/{month}/by/{mode}/json/1"
+        )
+        date_key = "added_on" if mode == "created" else "modified_on"
+        params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": count}
+        data = self._client.get_json(url, params, crawl=True)
+        if not data:
+            return [], 0
+        rows = data.get("aaData", [])
+        total = data.get("iTotalRecords", 0)
+        results = [
+            lb for row in rows if (lb := self._parse_label_archive_row(row, date_key))
+        ]
+        return results, total
+
+    def _fetch_label_archive(
+        self, mode: str, month: str | None, batch_size: int
+    ) -> list[dict[str, Any]]:
+        """Fetch all labels from the archives listing (created or modified)."""
+        all_labels = []
+        start = 0
+        while True:
+            results, total = self.fetch_recent_page(mode, month, start, batch_size)
+            if start == 0:
+                logger.info(f"Fetching {total} {mode} labels for {month}")
+            if not results:
+                break
+            all_labels.extend(results)
+            if len(all_labels) >= total:
+                break
+            start += batch_size
+        logger.success(f"Completed: {len(all_labels)} {mode} labels for {month}")
+        return all_labels
+
+    def _parse_label_archive_row(
+        self, row: list[str], date_key: str
+    ) -> dict[str, Any] | None:
+        """Parse a row from the label archive listing (6 columns).
+
+        Columns: [date_grouping, label_link, status, country, datetime, user].
+        """
+        if len(row) < 5:
+            return None
+
+        label_link = parse_link(row[1])
+        if not label_link:
+            return None
+
+        label_url = label_link.get("href", "")
+
+        return {
+            "_type": "label",
+            "name": normalize_text(label_link.text),
+            "url": label_url,
+            "id": extract_id_from_url(label_url),
+            "status": _html_text(row[2]),
+            "country": _html_text(row[3]),
+            date_key: normalize_text(row[4]),
+        }
 
     def get(self, label_url: str, **kwargs) -> dict | None:
         """Fetch and parse a label's detail page with rosters and releases.

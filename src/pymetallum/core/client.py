@@ -60,6 +60,34 @@ class MetalArchivesClient:
             logger.error(f"Request failed for {url}: {e}")
             return None
 
+    def get_with_url(
+        self, url: str, params: dict | None = None, crawl: bool = False
+    ) -> tuple[str, str] | None:
+        """Make a GET request and return both the response body and final URL.
+
+        Useful for endpoints that redirect (e.g. /band/random).
+
+        Args:
+            url: Full URL to fetch.
+            params: Optional query parameters.
+            crawl: If True, use the longer crawl delay between requests.
+
+        Returns:
+            Tuple of (response_text, final_url), or None on failure.
+        """
+        self._enforce_rate_limit(crawl=crawl)
+
+        if params:
+            url = f"{url}?{urlencode(params, doseq=True)}"
+
+        try:
+            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+            response.raise_for_status()
+            return response.text, str(response.url)
+        except Exception as e:
+            logger.error(f"Request failed for {url}: {e}")
+            return None
+
     def get_bytes(self, url: str, crawl: bool = False) -> bytes | None:
         """Make a GET request and return the response body as raw bytes.
 
