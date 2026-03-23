@@ -27,6 +27,9 @@ import json
 import re
 import sys
 from datetime import date, datetime
+from importlib.metadata import version
+
+__version__ = version("pymetallum")
 
 from loguru import logger
 
@@ -174,7 +177,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
-    parser.add_argument("--version", action="version", version="%(prog)s 0.2.0")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     return parser
 

@@ -12,6 +12,10 @@ BASE_URL = "https://www.metal-archives.com"
 REQUEST_TIMEOUT = 15
 
 
+class NotFoundError(Exception):
+    """Raised when a Metal Archives page returns HTTP 404."""
+
+
 class MetalArchivesClient:
     """HTTP client for Metal Archives, using curl_cffi to bypass Cloudflare.
 
@@ -54,8 +58,12 @@ class MetalArchivesClient:
 
         try:
             response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 404:
+                raise NotFoundError(f"404 Not Found: {url}")
             response.raise_for_status()
             return response.text
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.error(f"Request failed for {url}: {e}")
             return None
@@ -82,8 +90,12 @@ class MetalArchivesClient:
 
         try:
             response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 404:
+                raise NotFoundError(f"404 Not Found: {url}")
             response.raise_for_status()
             return response.text, str(response.url)
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.error(f"Request failed for {url}: {e}")
             return None
@@ -105,8 +117,12 @@ class MetalArchivesClient:
 
         try:
             response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+            if response.status_code == 404:
+                raise NotFoundError(f"404 Not Found: {url}")
             response.raise_for_status()
             return response.content
+        except NotFoundError:
+            raise
         except Exception as e:
             logger.error(f"Request failed for {url}: {e}")
             return None

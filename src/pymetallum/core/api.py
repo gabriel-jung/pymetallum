@@ -12,7 +12,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from .client import MetalArchivesClient
+from .client import MetalArchivesClient, NotFoundError
 from .parsers import (
     AlbumPageParser,
     ArtistPageParser,
@@ -405,7 +405,10 @@ class BandAPI(BaseAPI):
                 band["similar_artists"] = self.fetch_similar_artists(band_id)
 
         if band.get("logo_url"):
-            band["_logo_data"] = self._client.get_bytes(band["logo_url"])
+            try:
+                band["_logo_data"] = self._client.get_bytes(band["logo_url"])
+            except NotFoundError:
+                band["_logo_data"] = None
 
         return band
 
@@ -454,7 +457,10 @@ class BandAPI(BaseAPI):
             ``review_summary``.
         """
         url = f"{self._base_url}/band/discography/id/{band_id}/tab/all"
-        html = self._client.get(url)
+        try:
+            html = self._client.get(url)
+        except NotFoundError:
+            return []
         if not html:
             return []
 
@@ -853,7 +859,10 @@ class AlbumAPI(BaseAPI):
             album_url, AlbumPageParser, with_tracklist=True, with_lineup=True, **kwargs
         )
         if album and album.get("cover_url"):
-            album["_cover_data"] = self._client.get_bytes(album["cover_url"])
+            try:
+                album["_cover_data"] = self._client.get_bytes(album["cover_url"])
+            except NotFoundError:
+                album["_cover_data"] = None
         return album
 
     def fetch_upcoming_page(
@@ -1023,7 +1032,10 @@ class ArtistAPI(BaseAPI):
         """
         artist = self._fetch_and_parse(artist_url, ArtistPageParser, **kwargs)
         if artist and artist.get("photo_url"):
-            artist["_photo_data"] = self._client.get_bytes(artist["photo_url"])
+            try:
+                artist["_photo_data"] = self._client.get_bytes(artist["photo_url"])
+            except NotFoundError:
+                artist["_photo_data"] = None
         return artist
 
 
@@ -1078,7 +1090,10 @@ class LabelAPI(BaseAPI):
             List of parsed rows, where each row is a list of cell values.
         """
         url = f"{self._base_url}/label/{endpoint}/nbrPerPage/500/id/{label_id}"
-        data = self._client.get_json(url)
+        try:
+            data = self._client.get_json(url)
+        except NotFoundError:
+            return []
         if not data:
             return []
 

@@ -1,6 +1,11 @@
-from . import core, app
+from importlib.metadata import version
+
+from . import app, core
+
+__version__ = version("pymetallum")
 
 __all__ = [
-    "core",
+    "__version__",
     "app",
+    "core",
 ]

@@ -1,7 +1,7 @@
 """Public API surface for the pymetallum core library."""
 
 from .api import AlbumAPI, ArtistAPI, BandAPI, LabelAPI, SongAPI
-from .client import MetalArchivesClient
+from .client import MetalArchivesClient, NotFoundError
 
 __all__ = [
     "AlbumAPI",
@@ -9,5 +9,6 @@ __all__ = [
     "BandAPI",
     "LabelAPI",
     "MetalArchivesClient",
+    "NotFoundError",
     "SongAPI",
 ]
