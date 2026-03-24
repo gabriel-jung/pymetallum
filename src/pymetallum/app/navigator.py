@@ -6,8 +6,10 @@ from ..core.client import BASE_URL, MetalArchivesClient
 from .display import (
     ENTITY_SECTIONS,
     LAZY_SECTIONS,
+    SUMMARY,
     print_text_panel,
     console,
+    display_details,
     display_header,
     display_section,
     display_section_page,
@@ -66,11 +68,132 @@ class Navigator:
     def navigate(self, entity: dict) -> None:
         """Interactive display with navigation. Supports back navigation."""
         self._history.append(entity)
-
         try:
             self._interactive_loop(entity)
         finally:
             self._history.pop()
+
+    def browse(self, *, fetch_page, render_page=None, title=None,
+               page_size=25, full=False, loop=False):
+        """Paginated item browsing with navigation.
+
+        fetch_page(start, count) -> (results, total)
+        render_page(results, start): custom page renderer (default: one-liners)
+        loop: stay in browsing loop after entity navigation
+        """
+        start = 0
+        results, total = fetch_page(start, page_size)
+        if not results:
+            if not render_page:
+                console.print("[yellow]No items found.[/yellow]")
+            return
+
+        def _render_default(page_results, page_start):
+            if title:
+                console.print(f"\n[bold]{title}[/bold]")
+            for i, item in enumerate(page_results, page_start + 1):
+                console.print(f"  [bold cyan]\\[{i}][/bold cyan] ", end="")
+                SUMMARY.get(item.get("_type", "band"), SUMMARY["band"])(item)
+
+        render = render_page or _render_default
+
+        # Custom render: caller already displayed the section
+        if not render_page:
+            render(results, start)
+
+        while True:
+            end = min(start + len(results), total)
+            total_pages = (total + page_size - 1) // page_size
+            page = start // page_size
+
+            console.print()
+            if total_pages > 1:
+                console.print(
+                    f"[dim]Page {page + 1}/{total_pages} "
+                    f"({start + 1}-{end} of {total})[/dim]"
+                )
+
+            hints = [f"[bold]{start + 1}-{end}[/bold] to select"]
+            if page > 0:
+                hints.extend(["[bold]f[/bold]irst", "[bold]p[/bold]rev"])
+            if page < total_pages - 1:
+                hints.extend(["[bold]n[/bold]ext", "[bold]l[/bold]ast"])
+            console.print(f"[dim]{' | '.join(hints)}[/dim]")
+            console.print("[dim][bold]0[/bold] to go back | Ctrl+C to quit[/dim]")
+
+            try:
+                raw = console.input("[bold]>[/bold] ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                raise _QuitSignal()
+
+            if not raw:
+                continue
+            if raw == "0":
+                return
+
+            # Page navigation
+            new_start = None
+            if raw == "n" and page < total_pages - 1:
+                new_start = start + page_size
+            elif raw == "p" and page > 0:
+                new_start = max(0, start - page_size)
+            elif raw == "f" and page > 0:
+                new_start = 0
+            elif raw == "l" and page < total_pages - 1:
+                new_start = max(0, total - page_size)
+
+            if new_start is not None:
+                with console.status("Loading..."):
+                    results, total = fetch_page(new_start, page_size)
+                if not results:
+                    console.print("[dim]No more results.[/dim]")
+                    return
+                start = new_start
+                render(results, start)
+                continue
+
+            # Item selection
+            try:
+                choice = int(raw)
+            except ValueError:
+                continue
+
+            idx = choice - 1 - start
+            if not (0 <= idx < len(results)):
+                continue
+
+            item = results[idx]
+
+            # Lyrics
+            if item.get("song_id") and item.get("has_lyrics"):
+                api = next(iter(self.apis.values()))
+                with console.status("Fetching lyrics..."):
+                    lyrics = api.fetch_lyrics(item["song_id"])
+                if lyrics:
+                    print_text_panel(lyrics, item["name"])
+                else:
+                    console.print("[dim]Lyrics not available.[/dim]")
+                continue
+
+            # Entity navigation
+            if not item.get("_type") or not item.get("url"):
+                console.print("[dim]This item is not navigable.[/dim]")
+                continue
+
+            target = self.fetch(item["_type"], item["url"])
+            if not target:
+                console.print("[red]Could not fetch details.[/red]")
+                continue
+
+            if full:
+                display_details(target)
+                return
+
+            self.navigate(target)
+            if not loop:
+                return
+            # Re-display after coming back
+            render(results, start)
 
     def _interactive_loop(self, entity: dict) -> None:
         display_header(entity)
@@ -81,8 +204,6 @@ class Navigator:
             return
 
         lazy_keys = LAZY_SECTIONS.get(entity_type, set())
-
-        # Collect header-level navigable links (e.g. band → label)
         header_links = self._get_header_links(entity)
 
         while True:
@@ -92,16 +213,13 @@ class Navigator:
                 is_lazy = key in lazy_keys
                 is_nav = (entity_type, key) in NAVIGABLE_SECTIONS
 
-                suffix = ""
-                if is_nav:
-                    suffix = " [dim]→[/dim]"
+                suffix = " [dim]→[/dim]" if is_nav else ""
 
                 if has_data or is_lazy:
                     console.print(f"  [bold cyan]\\[{i}][/bold cyan] {label}{suffix}")
                 else:
                     console.print(f"  [dim]\\[{i}] {label} (empty)[/dim]")
 
-            # Header links
             for j, (link_label, link_type, link_url) in enumerate(header_links):
                 idx = len(sections) + 1 + j
                 console.print(
@@ -109,11 +227,10 @@ class Navigator:
                 )
 
             console.print()
-            exit_hints = []
-            if len(self._history) > 1:
-                exit_hints.append("[bold]0[/bold] to go back")
-            exit_hints.append("Ctrl+C to quit")
-            console.print(f"  [dim]{' | '.join(exit_hints)}[/dim]")
+            back_label = "go back" if len(self._history) > 1 else "exit"
+            console.print(
+                f"  [dim][bold]0[/bold] to {back_label} | Ctrl+C to quit[/dim]"
+            )
 
             try:
                 raw = console.input("\n[bold]Choose:[/bold] ").strip()
@@ -128,7 +245,7 @@ class Navigator:
             except ValueError:
                 continue
 
-            if choice == 0 and len(self._history) > 1:
+            if choice == 0:
                 break
 
             total_sections = len(sections)
@@ -149,112 +266,26 @@ class Navigator:
                 nav_fn = NAVIGABLE_SECTIONS.get((entity_type, key))
                 if nav_fn:
                     items = nav_fn(entity)
-                    if items:
-                        self._offer_navigation(items)
+                    n = len(items)
+                    self.browse(
+                        fetch_page=lambda s, c: (items[s : s + c], n),
+                        render_page=lambda r, s: display_section_page(
+                            items, s, len(r)
+                        ),
+                        page_size=n if n <= 100 else 25,
+                        loop=True,
+                    )
 
             elif total_sections < choice <= total_sections + total_header_links:
                 _, link_type, link_url = header_links[choice - total_sections - 1]
                 target = self.fetch(link_type, link_url)
                 if target:
                     self.navigate(target)
-                    # Re-display header when coming back
                     display_header(entity)
                 else:
                     console.print("[red]Could not fetch details.[/red]")
             else:
                 console.print("[red]Invalid choice.[/red]")
-
-    def _offer_navigation(self, items: list[dict]) -> None:
-        """Paginated navigation through section items."""
-        has_navigable = any(item.get("_type") and item.get("url") for item in items)
-        has_lyrics = any(item.get("has_lyrics") for item in items)
-        if not has_navigable and not has_lyrics:
-            return
-
-        page_size = 25
-        page = 0
-        total = len(items)
-        total_pages = (total + page_size - 1) // page_size
-
-        while True:
-            start = page * page_size
-            end = min(start + page_size, total)
-
-            console.print()
-            if total_pages > 1:
-                console.print(
-                    f"[dim]Page {page + 1}/{total_pages} "
-                    f"(items {start + 1}-{end} of {total})[/dim]"
-                )
-
-            hints = [f"[bold]1-{total}[/bold] to select"]
-            if page > 0:
-                hints.append("[bold]f[/bold]irst page")
-                hints.append("[bold]p[/bold]rev page")
-            if page < total_pages - 1:
-                hints.append("[bold]n[/bold]ext page")
-                hints.append("[bold]l[/bold]ast page")
-
-            console.print(f"[dim]{' | '.join(hints)}[/dim]")
-            console.print()
-            console.print("[dim][bold]0[/bold] to go back | Ctrl+C to quit[/dim]")
-
-            try:
-                raw = console.input("[bold]>[/bold] ").strip()
-            except (KeyboardInterrupt, EOFError):
-                raise _QuitSignal()
-
-            if not raw:
-                continue
-
-            raw = raw.lower()
-
-            if raw == "0":
-                return
-
-            new_page = page
-            if raw == "n" and page < total_pages - 1:
-                new_page = page + 1
-            elif raw == "p" and page > 0:
-                new_page = page - 1
-            elif raw == "f" and page > 0:
-                new_page = 0
-            elif raw == "l" and page < total_pages - 1:
-                new_page = total_pages - 1
-
-            if new_page != page:
-                page = new_page
-                display_section_page(items, start=page * page_size, count=page_size)
-                continue
-
-            try:
-                idx = int(raw) - 1
-            except ValueError:
-                continue
-
-            if 0 <= idx < total:
-                item = items[idx]
-
-                # Track with lyrics — fetch_lyrics is on BaseAPI, any API works
-                if item.get("song_id") and item.get("has_lyrics"):
-                    api = next(iter(self.apis.values()))
-                    with console.status("Fetching lyrics..."):
-                        lyrics = api.fetch_lyrics(item["song_id"])
-                    if lyrics:
-                        print_text_panel(lyrics, item["name"])
-                    else:
-                        console.print("[dim]Lyrics not available.[/dim]")
-                    continue
-
-                # Regular entity navigation
-                if not item.get("_type") or not item.get("url"):
-                    console.print("[dim]This item is not navigable.[/dim]")
-                    continue
-                target = self.fetch(item["_type"], item["url"])
-                if target:
-                    self.navigate(target)
-                    # Re-display current page after coming back
-                    display_section_page(items, start=page * page_size, count=page_size)
 
     def _get_header_links(self, entity: dict) -> list[tuple[str, str, str]]:
         """Return navigable links from the header: (display_label, entity_type, url)."""

@@ -128,6 +128,9 @@ def display_band_header(d: dict) -> None:
     _show_image_beside(d.get("_logo_data"), panel)
     if d.get("url"):
         console.print(f"[dim]{d['url']}[/dim]")
+    img_url = d.get("logo_url") or d.get("photo_url")
+    if img_url:
+        console.print(f"[dim]Image: {img_url}[/dim]")
 
 
 def display_band_details(d: dict) -> None:
@@ -247,6 +250,8 @@ def display_album_header(d: dict) -> None:
     _show_image_beside(d.get("_cover_data"), panel)
     if d.get("url"):
         console.print(f"[dim]{d['url']}[/dim]")
+    if d.get("cover_url"):
+        console.print(f"[dim]Image: {d['cover_url']}[/dim]")
 
 
 def display_album_details(d: dict) -> None:
@@ -362,6 +367,8 @@ def display_artist_header(d: dict) -> None:
     _show_image_beside(d.get("_photo_data"), panel)
     if d.get("url"):
         console.print(f"[dim]{d['url']}[/dim]")
+    if d.get("photo_url"):
+        console.print(f"[dim]Image: {d['photo_url']}[/dim]")
 
 
 def display_artist_details(d: dict) -> None:
@@ -481,6 +488,8 @@ def display_label_header(d: dict) -> None:
 
     if d.get("url"):
         console.print(f"[dim]{d['url']}[/dim]")
+    if d.get("logo_url"):
+        console.print(f"[dim]Image: {d['logo_url']}[/dim]")
 
 
 def display_label_details(d: dict) -> None:
@@ -570,13 +579,15 @@ def select_from_list(results: list[dict]) -> dict | None:
         SUMMARY[item["_type"]](item)
 
     num = len(results)
-    console.print(f"\n[dim]1-{num} to select | Ctrl+C to quit[/dim]")
+    console.print(f"\n[dim]1-{num} to select | [bold]0[/bold] to go back | Ctrl+C to quit[/dim]")
     while True:
         try:
             raw = console.input("[bold]>[/bold] ").strip()
             if not raw:
                 continue
             choice = int(raw)
+            if choice == 0:
+                return None
             if 1 <= choice <= num:
                 return results[choice - 1]
             console.print(

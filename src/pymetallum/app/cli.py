@@ -35,7 +35,7 @@ from loguru import logger
 
 from ..core.client import MetalArchivesClient
 from .countries import resolve_country
-from .display import SUMMARY, console, display_details, select_from_list
+from .display import console, display_details, select_from_list
 from .navigator import Navigator, _QuitSignal
 
 ENTITY_TYPES = ["band", "album", "artist", "song", "label"]
@@ -404,106 +404,24 @@ def _run_search(navigator, query, entity_type, args):
 def _run_advanced_search(navigator, entity_type, filters, args):
     """Run an advanced search with server-side pagination."""
     api = navigator.apis[entity_type]
-    display_summary = SUMMARY[entity_type]
-    page_size = 200
-    start = 0
-
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
-    with console.status(f"Searching {entity_type}s ({filter_desc})..."):
-        results, total = api.advanced_search(start=0, count=page_size, **filters)
-
-    if not results:
-        console.print(
-            f"[yellow]No {entity_type}s found matching your criteria.[/yellow]"
-        )
-        return
 
     if args.json:
+        with console.status(f"Searching {entity_type}s ({filter_desc})..."):
+            results, _total = api.advanced_search(start=0, count=200, **filters)
+        if not results:
+            console.print(
+                f"[yellow]No {entity_type}s found matching your criteria.[/yellow]"
+            )
+            return
         print(json.dumps(results, indent=2))
         return
 
-    while True:
-        end = min(start + len(results), total)
-        console.print()
-        for i, item in enumerate(results, start + 1):
-            console.print(f"  [bold cyan]\\[{i}][/bold cyan] ", end="")
-            display_summary(item)
-
-        console.print(
-            f"\n[dim]Showing {start + 1}-{end} of {total} {entity_type}s[/dim]"
-        )
-        hints = []
-        if start > 0:
-            hints.append("[bold]f[/bold]irst")
-            hints.append("[bold]p[/bold]rev")
-        if end < total:
-            hints.append("[bold]n[/bold]ext")
-            hints.append("[bold]l[/bold]ast")
-        hints.append("number to select")
-        console.print(f"[dim]{' | '.join(hints)}[/dim]")
-        console.print()
-        console.print("[dim]Ctrl+C to quit[/dim]")
-
-        try:
-            raw = console.input("[bold]>[/bold] ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            return
-
-        if not raw:
-            continue
-
-        if raw == "n" and end < total:
-            new_start = start + page_size
-        elif raw == "l" and end < total:
-            new_start = max(0, total - page_size)
-        elif raw == "p" and start > 0:
-            new_start = max(0, start - page_size)
-        elif raw == "f" and start > 0:
-            new_start = 0
-        else:
-            new_start = None
-
-        if new_start is not None:
-            with console.status("Loading..."):
-                results, total = api.advanced_search(
-                    start=new_start, count=page_size, **filters
-                )
-            if not results:
-                console.print("[dim]No more results.[/dim]")
-                return
-            start = new_start
-            continue
-
-        try:
-            choice = int(raw)
-        except ValueError:
-            continue
-
-        idx = choice - 1 - start
-        if 0 <= idx < len(results):
-            selected_item = results[idx]
-        else:
-            console.print("[red]Invalid choice.[/red]")
-            continue
-
-        # Determine which API to use for fetching details
-        selected_type = selected_item.get("_type", entity_type)
-        selected_api = navigator.apis[selected_type]
-
-        get_kwargs = {"full": True} if args.full else {}
-        with console.status("Fetching details..."):
-            entity = selected_api.get(selected_item["url"], **get_kwargs)
-
-        if not entity:
-            console.print("[red]Could not retrieve detailed information.[/red]")
-            continue
-
-        if args.full:
-            display_details(entity)
-            return
-
-        navigator.navigate(entity)
-        return
+    navigator.browse(
+        fetch_page=lambda s, c: api.advanced_search(start=s, count=c, **filters),
+        title=f"{entity_type.capitalize()}s ({filter_desc})",
+        full=args.full,
+    )
 
 
 def _fetch_recent_filtered(api, mode, months, from_d, to_d):
@@ -590,11 +508,10 @@ def _run_recent(navigator, entity_type, args):
             if not items:
                 console.print("[yellow]No items found.[/yellow]")
                 return
-            _browse_paginated(
-                navigator,
-                label,
-                args,
+            navigator.browse(
                 fetch_page=_list_fetcher(items),
+                title=label,
+                full=args.full,
             )
             return
 
@@ -634,11 +551,10 @@ def _run_recent(navigator, entity_type, args):
         # Skip menu if only one mode
         if len(mode_entries) == 1:
             _, label, fetch_fn = mode_entries[0]
-            _browse_paginated(
-                navigator,
-                label,
-                args,
+            navigator.browse(
                 fetch_page=fetch_fn,
+                title=label,
+                full=args.full,
             )
             return
 
@@ -662,7 +578,7 @@ def _recent_menu(navigator, mode_entries, args):
         for i, entry in enumerate(mode_entries, 1):
             console.print(f"  [bold cyan]\\[{i}][/bold cyan] {entry[1]}")
         console.print()
-        console.print("  [dim]Ctrl+C to quit[/dim]")
+        console.print("  [dim][bold]0[/bold] to go back | Ctrl+C to quit[/dim]")
 
         try:
             raw = console.input("\n[bold]Choose:[/bold] ").strip()
@@ -676,6 +592,9 @@ def _recent_menu(navigator, mode_entries, args):
             choice = int(raw)
         except ValueError:
             continue
+
+        if choice == 0:
+            return
 
         if 1 <= choice <= len(mode_entries):
             entry = mode_entries[choice - 1]
@@ -692,12 +611,10 @@ def _recent_menu(navigator, mode_entries, args):
                     continue
                 fetch_page = _list_fetcher(items)
 
-            _browse_paginated(
-                navigator,
-                label,
-                args,
+            navigator.browse(
                 fetch_page=fetch_page,
-                can_go_back=True,
+                title=label,
+                full=args.full,
             )
 
 
@@ -722,113 +639,13 @@ def _run_upcoming(navigator, args):
         print(json.dumps(releases, indent=2))
         return
 
-    _browse_paginated(
-        navigator,
-        f"Upcoming releases ({total})",
-        args,
+    navigator.browse(
         fetch_page=lambda s, c: album_api.fetch_upcoming_page(
             s, c, from_date=from_date, to_date=to_date
         ),
+        title=f"Upcoming releases ({total})",
+        full=args.full,
     )
-
-
-def _browse_paginated(navigator, title, args, fetch_page, can_go_back=False):
-    """Paginated browsing with server-side pagination.
-
-    fetch_page(start, count) -> (results, total)
-    """
-    page_size = 25
-    start = 0
-
-    results, total = fetch_page(start, page_size)
-    if not results:
-        console.print("[yellow]No items found.[/yellow]")
-        return
-
-    while True:
-        end = min(start + len(results), total)
-
-        console.print(f"\n[bold]{title}[/bold]")
-        for i, item in enumerate(results, start + 1):
-            console.print(f"  [bold cyan]\\[{i}][/bold cyan] ", end="")
-            item_type = item.get("_type", "band")
-            SUMMARY.get(item_type, SUMMARY["band"])(item)
-
-        console.print(f"\n[dim]Showing {start + 1}-{end} of {total}[/dim]")
-        hints = []
-        if start > 0:
-            hints.append("[bold]f[/bold]irst")
-            hints.append("[bold]p[/bold]rev")
-        if end < total:
-            hints.append("[bold]n[/bold]ext")
-            hints.append("[bold]l[/bold]ast")
-        hints.append("number to select")
-        console.print(f"[dim]{' | '.join(hints)}[/dim]")
-        console.print()
-        exit_hints = []
-        if can_go_back:
-            exit_hints.append("[bold]0[/bold] to go back")
-        exit_hints.append("Ctrl+C to quit")
-        console.print(f"[dim]{' | '.join(exit_hints)}[/dim]")
-
-        try:
-            raw = console.input("[bold]>[/bold] ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            return
-
-        if not raw:
-            continue
-
-        if raw == "0" and can_go_back:
-            return
-
-        if raw == "n" and end < total:
-            new_start = start + page_size
-        elif raw == "l" and end < total:
-            new_start = max(0, total - page_size)
-        elif raw == "p" and start > 0:
-            new_start = max(0, start - page_size)
-        elif raw == "f" and start > 0:
-            new_start = 0
-        else:
-            new_start = None
-
-        if new_start is not None:
-            with console.status("Loading..."):
-                results, total = fetch_page(new_start, page_size)
-            if not results:
-                console.print("[dim]No more results.[/dim]")
-                return
-            start = new_start
-            continue
-
-        try:
-            choice = int(raw)
-        except ValueError:
-            continue
-
-        idx = choice - 1 - start
-        if 0 <= idx < len(results):
-            selected = results[idx]
-            selected_type = selected.get("_type")
-            selected_url = selected.get("url")
-            if not selected_type or not selected_url:
-                console.print("[dim]This item is not navigable.[/dim]")
-                continue
-
-            get_kwargs = {"full": True} if selected_type == "band" and args.full else {}
-            with console.status("Fetching details..."):
-                entity = navigator.apis[selected_type].get(selected_url, **get_kwargs)
-            if not entity:
-                console.print("[red]Could not retrieve details.[/red]")
-                continue
-            if args.full:
-                display_details(entity)
-                return
-            navigator.navigate(entity)
-            return
-        else:
-            console.print("[red]Invalid choice.[/red]")
 
 
 def main():
