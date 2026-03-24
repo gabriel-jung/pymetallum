@@ -5,7 +5,6 @@ that handles searching, fetching detail pages, and parsing AJAX endpoints.
 All data is returned as plain dicts with a ``_type`` discriminator key.
 """
 
-from pathlib import Path
 from collections.abc import Callable
 from typing import Any
 
@@ -193,48 +192,6 @@ class BaseAPI:
             count=count,
             **filters,
         )
-
-    def download_image(
-        self, image_url: str, output_dir: str = "./images/"
-    ) -> str | None:
-        """Download an image from Metal Archives to a local file.
-
-        The output path mirrors the remote path structure under ``output_dir``.
-        For example, a band photo at ``.../images/1/2/3/photo.jpg`` is saved
-        to ``./images/1/2/3/photo.jpg``. Parent directories are created
-        automatically.
-
-        Args:
-            image_url: Full URL of the image (band photo, album cover, etc.).
-            output_dir: Local directory to save images under.
-
-        Returns:
-            The path of the saved file as a string, or None if the download
-            failed or ``image_url`` was empty.
-        """
-        if not image_url:
-            return None
-
-        try:
-            clean_path = image_url.split("?")[0].replace(
-                self._base_url + "/images/", ""
-            )
-            output_path = Path(output_dir) / clean_path
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            image_data = self._client.get_bytes(image_url)
-            if not image_data:
-                return None
-
-            with open(output_path, "wb") as f:
-                f.write(image_data)
-
-            logger.debug(f"Downloaded {Path(clean_path).name} -> {output_path}")
-            return str(output_path)
-
-        except Exception as e:
-            logger.debug(f"Failed to download {image_url}: {e}")
-            return None
 
     def fetch_lyrics(self, song_id: str) -> str | None:
         """Fetch song lyrics via the AJAX lyrics endpoint.

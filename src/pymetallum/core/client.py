@@ -2,6 +2,7 @@
 
 import json
 import time
+from pathlib import Path
 from urllib.parse import urlencode
 
 from bs4 import BeautifulSoup
@@ -152,6 +153,46 @@ class MetalArchivesClient:
             return _extract_json(text)
         except Exception as e:
             logger.error(f"Failed to parse JSON from {url}: {e}")
+            return None
+
+    def download_image(
+        self, url: str, output_dir: str = "./images/"
+    ) -> str | None:
+        """Download an image to a local file.
+
+        The output path mirrors the remote path structure under ``output_dir``.
+        For example, an image at ``.../images/1/2/3/photo.jpg`` is saved
+        to ``output_dir/1/2/3/photo.jpg``. Parent directories are created
+        automatically.
+
+        Args:
+            url: Full image URL.
+            output_dir: Local directory to save images under.
+
+        Returns:
+            The path of the saved file as a string, or None if the download
+            failed or ``url`` was empty.
+        """
+        if not url:
+            return None
+
+        try:
+            clean_path = url.split("?")[0].replace(
+                self.base_url + "/images/", ""
+            )
+            output_path = Path(output_dir) / clean_path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            image_data = self.get_bytes(url)
+            if not image_data:
+                return None
+
+            output_path.write_bytes(image_data)
+            logger.debug(f"Downloaded {Path(clean_path).name} -> {output_path}")
+            return str(output_path)
+
+        except Exception as e:
+            logger.debug(f"Failed to download {url}: {e}")
             return None
 
     def _enforce_rate_limit(self, crawl: bool = False):
