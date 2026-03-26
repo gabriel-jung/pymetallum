@@ -1,7 +1,7 @@
 """Interactive entity browser with back-navigation, pagination, and lazy fetching."""
 
 from ..core.api import AlbumAPI, ArtistAPI, BandAPI, LabelAPI, SongAPI
-from ..core.client import BASE_URL, MetalArchivesClient
+from ..core.client import MetalArchivesClient
 
 from .display import (
     ENTITY_SECTIONS,
@@ -302,7 +302,7 @@ class Navigator:
             if len(band_ids) == 1:
                 band_name = entity.get("band", "Band")
                 links.append(
-                    (f"Band: {band_name}", "band", f"{BASE_URL}/bands//{band_ids[0]}")
+                    (f"Band: {band_name}", "band", BandAPI.url(band_ids[0]))
                 )
             label_ids = entity.get("label_id", [])
             if len(label_ids) == 1:
@@ -311,7 +311,7 @@ class Navigator:
                     (
                         f"Label: {label_name}",
                         "label",
-                        f"{BASE_URL}/labels//{label_ids[0]}",
+                        LabelAPI.url(label_ids[0]),
                     )
                 )
 

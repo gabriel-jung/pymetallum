@@ -11,7 +11,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from .client import MetalArchivesClient, NotFoundError
+from .client import BASE_URL, MetalArchivesClient, NotFoundError
 from .parsers import (
     AlbumPageParser,
     ArtistPageParser,
@@ -231,6 +231,11 @@ class BandAPI(BaseAPI):
     data (description, similar artists) can be fetched lazily or eagerly via
     the ``full`` flag.
     """
+
+    @staticmethod
+    def url(band_id: str) -> str:
+        """Build a band page URL from an ID."""
+        return f"{BASE_URL}/bands//{band_id}"
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if len(row) < 3 or not (name_link := parse_link(row[0])):
@@ -729,6 +734,11 @@ class AlbumAPI(BaseAPI):
     by default, and downloads the cover art in-memory for terminal display.
     """
 
+    @staticmethod
+    def url(album_id: str) -> str:
+        """Build an album page URL from an ID."""
+        return f"{BASE_URL}/albums///{album_id}"
+
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if len(row) < 2:
             return None
@@ -937,6 +947,11 @@ class ArtistAPI(BaseAPI):
     full artist page with biography and a complete bands overview.
     """
 
+    @staticmethod
+    def url(artist_id: str) -> str:
+        """Build an artist page URL from an ID."""
+        return f"{BASE_URL}/artists//{artist_id}"
+
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if not row or not (name_link := parse_link(row[0])):
             return None
@@ -1003,6 +1018,11 @@ class LabelAPI(BaseAPI):
     focus). The ``get()`` method fetches the label page along with three
     AJAX tables: current roster, past roster, and releases.
     """
+
+    @staticmethod
+    def url(label_id: str) -> str:
+        """Build a label page URL from an ID."""
+        return f"{BASE_URL}/labels//{label_id}"
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if not row or not (name_link := parse_link(row[0])):
