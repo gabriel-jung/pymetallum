@@ -298,6 +298,8 @@ class AlbumPageParser(BasePageParser):
                 "song_id": song_id,
                 "has_lyrics": has_lyrics,
             }
+            if has_lyrics and song_id:
+                track["_type"] = "song"
             if note:
                 track["note"] = note
 

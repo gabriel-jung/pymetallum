@@ -8,10 +8,12 @@ terminals.
 
 ## Install
 
+Requires Python 3.10+.
+
 ```bash
-pip install pymetallum
-# or
 uv tool install pymetallum
+# or
+pip install pymetallum
 ```
 
 For local development:
@@ -98,15 +100,15 @@ metallum --label --recent
 metallum --label --new
 
 # specific month
-metallum --new --month 2025-01
+metallum --new --month 2026-01
 
 # date range (fetches full months then filters — slow for wide ranges)
-metallum --new --from 2025-03-01
-metallum --modified --from 2025-02-15 --to 2025-03-15
+metallum --new --from 2026-03-01
+metallum --modified --from 2026-02-15 --to 2026-03-15
 
 # upcoming album releases
 metallum --upcoming
-metallum --upcoming --from 2025-04-01 --to 2025-06-01
+metallum --upcoming --from 2026-04-01 --to 2026-06-01
 ```
 
 ### Random band
@@ -131,36 +133,45 @@ iTerm2 or Kitty image protocol (iTerm2, Kitty, WezTerm, Mintty).
 
 ## Library
 
+The `core` module has no terminal dependencies — use it in scripts, pipelines,
+or other tools. All data is returned as plain dicts.
+
 ```python
-from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI, LabelAPI
+from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI, ArtistAPI, SongAPI, LabelAPI
 
 with MetalArchivesClient() as client:
     bands = BandAPI(client)
+
+    # search and fetch
     results = bands.search("Summoning")
     band = bands.get(results[0]["url"])
+    band = bands.get(results[0]["url"], full=True)  # includes description & similar artists
 
+    # advanced search with filters
     results, total = bands.advanced_search(genre="black metal", country="AT")
 
     # random band
     band = bands.get_random()
 
-    # recent/upcoming
-    new_bands = bands.fetch_recently_created("2025-03")
-    modified_bands = bands.fetch_recently_modified("2025-03")
-    page, total = bands.fetch_recent_page("created", "2025-03", start=0, count=25)
+    # recent entries
+    new_bands = bands.fetch_recently_created("2026-03")
+    modified_bands = bands.fetch_recently_modified("2026-03")
+    page, total = bands.fetch_recent_page("created", "2026-03", start=0, count=25)
 
+    # albums & upcoming releases
     albums = AlbumAPI(client)
     album = albums.get(band["discography"][0]["url"])
-    upcoming = albums.fetch_upcoming(from_date="2025-04-01", to_date="2025-06-01")
+    upcoming = albums.fetch_upcoming(from_date="2026-04-01", to_date="2026-06-01")
 
+    # artists, songs, labels
+    artists = ArtistAPI(client)
+    songs = SongAPI(client)
     labels = LabelAPI(client)
-    new_labels = labels.fetch_recently_created("2025-03")
+    new_labels = labels.fetch_recently_created("2026-03")
+
+    # download images
+    client.download_image(band["logo_url"], output_dir="./images/")
 ```
-
-All data is returned as plain dicts. The `core` module has no terminal
-dependencies — use it in scripts, pipelines, or other tools.
-
-Available API classes: `BandAPI`, `AlbumAPI`, `ArtistAPI`, `SongAPI`, `LabelAPI`.
 
 ## License
 

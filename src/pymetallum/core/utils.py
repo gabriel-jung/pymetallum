@@ -1,6 +1,7 @@
 """Shared HTML/text utility functions used by parsers and the API layer."""
 
 import re
+from datetime import date, datetime
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
@@ -111,3 +112,29 @@ def create_link_dict(link_element: Tag) -> dict[str, Any] | None:
         "url": url,
         "id": extract_id_from_url(url),
     }
+
+
+def extract_date(item: dict, year: int | None = None) -> date | None:
+    """Extract a date from an item's ``added_on`` or ``modified_on`` fields.
+
+    Handles two Metal Archives date formats:
+    - ISO prefix: ``"2026-03-15 ..."``
+    - Abbreviated: ``"Mar 15th, ..."`` (requires ``year``)
+    """
+    for key in ("added_on", "modified_on"):
+        val = item.get(key)
+        if not val:
+            continue
+        try:
+            return datetime.strptime(val[:10], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            pass
+        m = re.match(r"([A-Z][a-z]{2})\s+(\d+)\w*,", val)
+        if m and year:
+            try:
+                month_num = datetime.strptime(m.group(1), "%b").month
+                day = int(m.group(2))
+                return date(year, month_num, day)
+            except (ValueError, TypeError):
+                pass
+    return None

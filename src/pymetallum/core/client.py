@@ -52,22 +52,10 @@ class MetalArchivesClient:
             Response body as a string, or None on any failure (timeout,
             HTTP error, network issue).
         """
-        self._enforce_rate_limit(crawl=crawl)
-
-        if params:
-            url = f"{url}?{urlencode(params, doseq=True)}"
-
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 404:
-                raise NotFoundError(f"404 Not Found: {url}")
-            response.raise_for_status()
-            return response.text
-        except NotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Request failed for {url}: {e}")
+        result = self._request(url, params, crawl)
+        if result is None:
             return None
+        return result.text
 
     def get_with_url(
         self, url: str, params: dict | None = None, crawl: bool = False
@@ -84,22 +72,10 @@ class MetalArchivesClient:
         Returns:
             Tuple of (response_text, final_url), or None on failure.
         """
-        self._enforce_rate_limit(crawl=crawl)
-
-        if params:
-            url = f"{url}?{urlencode(params, doseq=True)}"
-
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 404:
-                raise NotFoundError(f"404 Not Found: {url}")
-            response.raise_for_status()
-            return response.text, str(response.url)
-        except NotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Request failed for {url}: {e}")
+        result = self._request(url, params, crawl)
+        if result is None:
             return None
+        return result.text, str(result.url)
 
     def get_bytes(self, url: str, crawl: bool = False) -> bytes | None:
         """Make a GET request and return the response body as raw bytes.
@@ -114,14 +90,22 @@ class MetalArchivesClient:
         Returns:
             Raw bytes of the response body, or None on failure.
         """
-        self._enforce_rate_limit(crawl=crawl)
+        result = self._request(url, crawl=crawl)
+        if result is None:
+            return None
+        return result.content
 
+    def _request(self, url: str, params: dict | None = None, crawl: bool = False):
+        """Internal: execute a GET request and return the response object, or None."""
+        self._enforce_rate_limit(crawl=crawl)
+        if params:
+            url = f"{url}?{urlencode(params, doseq=True)}"
         try:
             response = self._session.get(url, timeout=REQUEST_TIMEOUT)
             if response.status_code == 404:
                 raise NotFoundError(f"404 Not Found: {url}")
             response.raise_for_status()
-            return response.content
+            return response
         except NotFoundError:
             raise
         except Exception as e:
