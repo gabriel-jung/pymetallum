@@ -204,6 +204,9 @@ class AlbumPageParser(BasePageParser):
 
         if self.with_tracklist:
             album["tracklist"] = self._parse_tracklist()
+            for track in album["tracklist"]:
+                if track.get("song_id"):
+                    track["url"] = f"{self.url}#{track['song_id']}"
         if self.with_lineup:
             album["lineup"] = self._parse_lineup()
 
@@ -298,7 +301,7 @@ class AlbumPageParser(BasePageParser):
                 "song_id": song_id,
                 "has_lyrics": has_lyrics,
             }
-            if has_lyrics and song_id:
+            if song_id:
                 track["_type"] = "song"
             if note:
                 track["note"] = note

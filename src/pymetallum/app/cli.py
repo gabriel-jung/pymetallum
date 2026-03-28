@@ -235,13 +235,12 @@ song_def = EntityDef(
         HeaderField("Album", key="album"),
         HeaderField("Track", key="track_number"),
         HeaderField("Duration", key="duration"),
-        HeaderField("Has Lyrics", key="has_lyrics",
-                    transform=lambda v: "Yes" if v else "No"),
     ],
     sections=[
         SectionDef("lyrics", lazy=True),
     ],
     footer=["url"],
+    auto_full=True,
 )
 
 _ROSTER_COLUMNS = [
