@@ -29,11 +29,21 @@ from rich_metadata import (
     resolve_entity_type,
 )
 
-from ..core.api import STATUS_MAP, AlbumAPI, ArtistAPI, BandAPI, LabelAPI, SongAPI
+from ..core.api import STATUS_MAP, BandAPI, LabelAPI
 from ..core.client import MetalArchivesClient
 from ..core.countries import resolve_country
+from .common import (
+    ENTITY_TYPES,
+    LAZY_FETCHERS,
+    NAME_PARAM,
+    VALID_FILTERS,
+    band_origin,
+    build_filters,
+    make_apis,
+    styles_transform,
+)
 
-# ─── Display transforms ──────────────────────────────────────────────────────
+# ─── Display transforms (CLI-specific Rich markup) ──────────────────────────
 
 STATUS_COLORS = {
     "Active": "green",
@@ -50,21 +60,9 @@ def _status_transform(status: str) -> str:
     return f"[{color}]{status}[/{color}]" if status else ""
 
 
-def _band_origin(d: dict) -> str:
-    """Format origin as 'Country (Location)' or just 'Country'."""
-    country = d.get("country_of_origin") or d.get("country", "")
-    location = d.get("location", "")
-    return f"{country} ({location})" if country and location else country
-
-
 def _album_title(d: dict) -> str:
     """Format album header title as 'Name by Band'."""
     return f"[bold]{d.get('name', '')}[/bold] [dim]by[/dim] {d.get('band', 'Unknown')}"
-
-
-def _styles_transform(styles) -> str:
-    """Join a list of style strings with commas."""
-    return ", ".join(styles) if styles else ""
 
 
 def _label_footer_sub_labels(d: dict) -> str | None:
@@ -98,7 +96,7 @@ band_def = EntityDef(
     header_fields=[
         HeaderField("Status", key="status", transform=_status_transform),
         HeaderField("Active", key="years_active"),
-        HeaderField("Origin", transform=_band_origin),
+        HeaderField("Origin", transform=band_origin),
         HeaderField("Genre", key="genre"),
         HeaderField("Label", key="current_label"),
         HeaderField("Themes", key="themes"),
@@ -137,6 +135,7 @@ album_def = EntityDef(
     summary=[
         SummaryField(key="name", style="bold"),
         SummaryField(prefix="by ", key="band", fallback="Unknown"),
+        SummaryField(key="release_date", style="dim", transform=lambda v: f"({v})" if v else ""),
     ],
     header_fields=[
         HeaderField("Type", key="album_type"),
@@ -261,7 +260,7 @@ label_def = EntityDef(
         HeaderField("Phone", key="phone"),
         HeaderField("Status", key="status"),
         HeaderField("Founded", key="founding_date"),
-        HeaderField("Styles", key="styles", transform=_styles_transform),
+        HeaderField("Styles", key="styles", transform=styles_transform),
         HeaderField("Website", key="website"),
         HeaderField("Email", key="email"),
         HeaderField(
@@ -292,37 +291,7 @@ engine = DisplayEngine()
 engine.register(band_def, album_def, artist_def, song_def, label_def)
 console = engine.console
 
-LAZY_FETCHERS = {
-    ("band", "description"): lambda api, entity: api.fetch_description(entity["id"]),
-    ("band", "similar_artists"): lambda api, entity: api.fetch_similar_artists(entity["id"]),
-    ("song", "lyrics"): lambda api, entity: api.fetch_lyrics(entity["song_id"]) if entity.get("song_id") else None,
-}
-
-ENTITY_TYPES = ["band", "album", "artist", "song", "label"]
-
-# ─── CLI constants ────────────────────────────────────────────────────────────
-
-# Which flags are valid for each entity type (also defines which types support advanced search)
-_VALID_FILTERS: dict[str, set[str]] = {
-    "band": {"genre", "country", "themes", "year", "status", "location", "label_name"},
-    "album": {"genre", "country", "year", "location", "label_name"},
-    "song": {"genre", "lyrics"},
-}
-_ALL_FILTER_FLAGS = sorted(set().union(*_VALID_FILTERS.values()))
-
-# API parameter name when it differs from the flag name
-_API_PARAM_NAME: dict[tuple[str, str], str] = {
-    ("band", "label_name"): "bandLabelName",
-    ("album", "label_name"): "releaseLabelName",
-}
-
-_YEAR_PARAMS = {
-    "band": ("yearCreationFrom", "yearCreationTo"),
-    "album": ("releaseYearFrom", "releaseYearTo"),
-}
-
-# API parameter name for name queries in advanced search
-_NAME_PARAM = {"band": "bandName", "album": "releaseTitle", "song": "songTitle"}
+_ALL_FILTER_FLAGS = sorted(set().union(*VALID_FILTERS.values()))
 
 
 # ─── Parser ───────────────────────────────────────────────────────────────────
@@ -368,21 +337,50 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--genre", type=str, help="Filter by genre")
     parser.add_argument("--country", type=str, help="Filter by country (ISO code)")
     parser.add_argument("--themes", type=str, help="Filter bands by lyrical themes")
-    parser.add_argument("--year", type=str, help="Filter by year or range (e.g. 1995 or 1990-1995)")
-    parser.add_argument("--status", type=str, help="Filter bands by status (active, split-up, on hold, changed name, unknown)")
+    parser.add_argument(
+        "--year", type=str, help="Filter by year or range (e.g. 1995 or 1990-1995)",
+    )
+    parser.add_argument(
+        "--status", type=str,
+        help="Filter bands by status (active, split-up, on hold, changed name, unknown)",
+    )
     parser.add_argument("--location", type=str, help="Filter by location")
     parser.add_argument("--label-name", type=str, help="Filter by label name")
     parser.add_argument("--lyrics", type=str, help="Search songs by lyrics content")
     parser.add_argument("--random", action="store_true", help="Open a random band page")
-    parser.add_argument("--recent", action="store_true", help="Show recently added/modified entries (default: bands, or use --label)")
-    parser.add_argument("--new", action="store_true", help="Show only newly created entries (implies --recent)")
-    parser.add_argument("--modified", action="store_true", help="Show only recently modified entries (implies --recent)")
-    parser.add_argument("--upcoming", action="store_true", help="Show upcoming album releases")
-    parser.add_argument("--month", type=str, help="Month for --recent (YYYY-MM format, default: current month)")
-    parser.add_argument("--from", dest="from_date", type=str, help="Start date (YYYY-MM-DD) for --recent or --upcoming")
-    parser.add_argument("--to", dest="to_date", type=str, help="End date (YYYY-MM-DD) for --recent or --upcoming")
-    parser.add_argument("-s", "--search", action="store_true", help="Show all matches instead of only exact ones")
-    parser.add_argument("--full", action="store_true", help="Show all sections at once (no interactive menu)")
+    parser.add_argument(
+        "--recent", action="store_true",
+        help="Show recently added/modified entries (default: bands, or --label)",
+    )
+    parser.add_argument(
+        "--new", action="store_true",
+        help="Show only newly created entries (implies --recent)",
+    )
+    parser.add_argument(
+        "--modified", action="store_true",
+        help="Show only recently modified entries (implies --recent)",
+    )
+    parser.add_argument("--upcoming", action="store_true", help="Show upcoming releases")
+    parser.add_argument(
+        "--month", type=str,
+        help="Month for --recent (YYYY-MM format, default: current month)",
+    )
+    parser.add_argument(
+        "--from", dest="from_date", type=str,
+        help="Start date (YYYY-MM-DD) for --recent or --upcoming",
+    )
+    parser.add_argument(
+        "--to", dest="to_date", type=str,
+        help="End date (YYYY-MM-DD) for --recent or --upcoming",
+    )
+    parser.add_argument(
+        "-s", "--search", action="store_true",
+        help="Show all matches instead of only exact ones",
+    )
+    parser.add_argument(
+        "--full", action="store_true",
+        help="Show all sections at once (no interactive menu)",
+    )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -393,28 +391,19 @@ def _build_parser() -> argparse.ArgumentParser:
 # ─── Filter helpers ───────────────────────────────────────────────────────────
 
 
-def _parse_year_range(year_str: str) -> tuple[str, str]:
-    """Split '1990-1995' into ('1990', '1995'). A single year returns (year, year)."""
-    if "-" in year_str:
-        parts = year_str.split("-", 1)
-        return parts[0].strip(), parts[1].strip()
-    year = year_str.strip()
-    return year, year
-
-
 def _build_advanced_filters(args, entity_type: str) -> dict | None:
-    """Validate and convert CLI flags to Metal Archives API filter parameters.
+    """Validate CLI flags and build Metal Archives API filter parameters.
 
     Returns None and prints errors on invalid input.
     """
-    if entity_type not in _VALID_FILTERS:
+    if entity_type not in VALID_FILTERS:
         console.print(
             f"[red]Advanced search not available for {entity_type}s. "
             f"Use --band, --album, or --song.[/red]"
         )
         return None
 
-    valid = _VALID_FILTERS[entity_type]
+    valid = VALID_FILTERS[entity_type]
     errors = [
         f"--{flag.replace('_', '-')} not supported for {entity_type} search"
         for flag in _ALL_FILTER_FLAGS
@@ -425,39 +414,35 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
             console.print(f"[red]{err}[/red]")
         return None
 
-    filters = {}
-    for flag in _ALL_FILTER_FLAGS:
-        value = getattr(args, flag, None)
-        if not value or flag not in valid:
-            continue
-        if flag == "country":
-            code = resolve_country(value)
-            if not code:
-                console.print(
-                    f"[red]Unknown country '{value}'. Use an ISO code "
-                    f"(e.g. FR, NO, US) or a full country name.\n"
-                    f"For regions/cities, use --location instead.[/red]"
-                )
-                return None
-            filters["country"] = code
-        elif flag == "year":
-            year_from, year_to = _parse_year_range(value)
-            param_from, param_to = _YEAR_PARAMS[entity_type]
-            filters[param_from] = year_from
-            filters[param_to] = year_to
-        elif flag == "status":
-            code = STATUS_MAP.get(value.lower())
-            if not code:
-                console.print(
-                    f"[red]Unknown status '{value}'. "
-                    f"Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]"
-                )
-                return None
-            filters["status"] = code
-        else:
-            param = _API_PARAM_NAME.get((entity_type, flag), flag)
-            filters[param] = value
-    return filters
+    # CLI-specific validation before delegating to shared builder
+    country = getattr(args, "country", None)
+    if country and not resolve_country(country):
+        console.print(
+            f"[red]Unknown country '{country}'. Use an ISO code "
+            f"(e.g. FR, NO, US) or a full country name.\n"
+            f"For regions/cities, use --location instead.[/red]"
+        )
+        return None
+
+    status = getattr(args, "status", None)
+    if status and not STATUS_MAP.get(status.lower()):
+        console.print(
+            f"[red]Unknown status '{status}'. "
+            f"Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]"
+        )
+        return None
+
+    return build_filters(
+        entity_type,
+        genre=getattr(args, "genre", None),
+        country=country,
+        year=getattr(args, "year", None),
+        status=status,
+        themes=getattr(args, "themes", None),
+        location=getattr(args, "location", None),
+        label=getattr(args, "label_name", None),
+        lyrics=getattr(args, "lyrics", None),
+    )
 
 
 # ─── Search/browse commands ───────────────────────────────────────────────────
@@ -509,7 +494,9 @@ def _run_listing(navigator, entity_type, args):
             print(json.dumps(releases, indent=2))
             return
         navigator.browse(
-            fetch_page=lambda s, c: api.fetch_upcoming_page(s, c, from_date=args.from_date, to_date=args.to_date),
+            fetch_page=lambda s, c: api.fetch_upcoming_page(
+            s, c, from_date=args.from_date, to_date=args.to_date,
+        ),
             title="Upcoming releases",
             full=args.full,
         )
@@ -582,14 +569,7 @@ def _run_listing(navigator, entity_type, args):
 
 def _make_navigator(client: MetalArchivesClient) -> BaseNavigator:
     """Create a navigator wired to all Metal Archives APIs."""
-    apis = {
-        "band": BandAPI(client),
-        "album": AlbumAPI(client),
-        "artist": ArtistAPI(client),
-        "song": SongAPI(client),
-        "label": LabelAPI(client),
-    }
-    return BaseNavigator(engine, apis=apis, lazy_fetchers=LAZY_FETCHERS)
+    return BaseNavigator(engine, apis=make_apis(client), lazy_fetchers=LAZY_FETCHERS)
 
 
 def main():
@@ -641,8 +621,8 @@ def main():
                 if filters is None:
                     return
 
-                if name_query and search_type in _NAME_PARAM:
-                    filters[_NAME_PARAM[search_type]] = name_query
+                if name_query and search_type in NAME_PARAM:
+                    filters[NAME_PARAM[search_type]] = name_query
 
                 if not filters:
                     parser.error("No valid filters provided.")

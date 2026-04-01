@@ -7,7 +7,7 @@ All data is returned as plain dicts with a ``_type`` discriminator key.
 
 from collections.abc import Callable
 from datetime import date
-from typing import Any
+from typing import Any, ClassVar
 
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -199,6 +199,9 @@ class BaseAPI:
         build a BeautifulSoup tree, pass it to the appropriate parser, and
         return the parsed dict. Extra kwargs are forwarded to the parser
         constructor (e.g. ``with_tracklist=True`` for AlbumPageParser).
+        Unknown kwargs are silently ignored so that callers can pass
+        generic options like ``full=`` without breaking parsers that
+        don't accept them.
 
         Args:
             url: The detail page URL (e.g. a band or album page).
@@ -208,10 +211,15 @@ class BaseAPI:
         Returns:
             Parsed entity dict with ``_type`` key, or None on fetch failure.
         """
+        import inspect
+
         html = self._client.get(url)
         if not html:
             return None
-        parser = parser_class(BeautifulSoup(html, "html.parser"), url, **kwargs)
+        sig = inspect.signature(parser_class.__init__)
+        valid = set(sig.parameters) - {"self"}
+        filtered = {k: v for k, v in kwargs.items() if k in valid}
+        parser = parser_class(BeautifulSoup(html, "html.parser"), url, **filtered)
         return parser.parse()
 
     def _generic_search(
@@ -400,7 +408,7 @@ class BandAPI(BaseAPI):
     _ADVANCED_ROW_PARSER = "_parse_search_row"
     _ARCHIVE_ENDPOINT = "/archives/ajax-band-list"
     _ARCHIVE_ROW_PARSER = "_parse_archive_row"
-    _ADVANCED_DEFAULTS = {
+    _ADVANCED_DEFAULTS: ClassVar[dict[str, str]] = {
         "bandName": "",
         "genre": "",
         "country": "",
@@ -504,7 +512,7 @@ class BandAPI(BaseAPI):
             text = text.removesuffix("Read more").strip()
         return text or None
 
-    def _fetch_discography(self, band_id: str, band_name: str = None) -> list[dict]:
+    def _fetch_discography(self, band_id: str, band_name: str | None = None) -> list[dict]:
         """Fetch the full discography via the AJAX tab endpoint.
 
         Hits ``/band/discography/id/{band_id}/tab/all`` which returns an HTML
@@ -671,7 +679,7 @@ class BandAPI(BaseAPI):
         Returns:
             Complete list of band dicts from the entire Metal Archives catalog.
         """
-        letters = ["#"] + list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + ["~"]
+        letters = ["#", *"ABCDEFGHIJKLMNOPQRSTUVWXYZ", "~"]
         all_bands = []
 
         logger.info(f"Starting to fetch all bands from {len(letters)} letters...")
@@ -776,7 +784,7 @@ class AlbumAPI(BaseAPI):
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/albums"
     _ADVANCED_ROW_PARSER = "_parse_advanced_row"
-    _ADVANCED_DEFAULTS = {
+    _ADVANCED_DEFAULTS: ClassVar[dict[str, str]] = {
         "bandName": "",
         "releaseTitle": "",
         "releaseYearFrom": "",
@@ -1290,7 +1298,7 @@ class SongAPI(BaseAPI):
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/songs"
     _ADVANCED_ROW_PARSER = "_parse_search_row"
-    _ADVANCED_DEFAULTS = {
+    _ADVANCED_DEFAULTS: ClassVar[dict[str, str]] = {
         "songTitle": "",
         "bandName": "",
         "releaseTitle": "",

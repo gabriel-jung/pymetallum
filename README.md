@@ -8,20 +8,68 @@ terminals.
 
 ## Install
 
-Requires Python 3.10+.
+Requires Python 3.12+.
+
+### Terminal CLI
 
 ```bash
-uv tool install pymetallum
+uv tool install pymetallum[cli]
 # or
+pip install pymetallum[cli]
+```
+
+### Discord bot
+
+```bash
+uv tool install pymetallum[discord]
+# or
+pip install pymetallum[discord]
+```
+
+Create a bot application at the [Discord Developer Portal](https://discord.com/developers/applications),
+enable the `bot` scope with `Send Messages` and `Use Slash Commands` permissions,
+then invite it to your server with the generated OAuth2 URL.
+
+Set your bot token and run:
+
+```bash
+export DISCORD_TOKEN=your-bot-token
+metallum-discord
+# or with a .env file in the current directory
+metallum-discord
+```
+
+Use `--guild GUILD_ID` to sync slash commands instantly to a specific server
+(global sync can take up to an hour).
+
+Slash commands (all under `/metallum`):
+
+| Command | Description |
+|---------|-------------|
+| `/metallum band <query>` | Search bands (with optional genre, country, year, status, themes, location, label filters) |
+| `/metallum album <query>` | Search albums (with optional genre, country, year, location, label filters) |
+| `/metallum artist <query>` | Search artists |
+| `/metallum song <query>` | Search songs (with optional genre, lyrics filters) |
+| `/metallum label <query>` | Search labels |
+| `/metallum search <query>` | Search all categories |
+| `/metallum random` | Show a random band |
+| `/metallum recent` | Recently added/modified bands or labels |
+| `/metallum upcoming` | Upcoming album releases |
+
+### Library only
+
+The `core` module has no UI dependencies:
+
+```bash
 pip install pymetallum
 ```
 
-For local development:
+### Development
 
 ```bash
 git clone https://github.com/gabriel-jung/pymetallum.git
 cd pymetallum
-uv sync
+uv sync  # installs both [cli] and [discord] extras
 ```
 
 ## Usage
@@ -133,8 +181,7 @@ iTerm2 or Kitty image protocol (iTerm2, Kitty, WezTerm, Mintty).
 
 ## Library
 
-The `core` module has no terminal dependencies — use it in scripts, pipelines,
-or other tools. All data is returned as plain dicts.
+All data is returned as plain dicts — use it in scripts, pipelines, or other tools.
 
 ```python
 from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI, ArtistAPI, SongAPI, LabelAPI

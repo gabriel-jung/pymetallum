@@ -505,7 +505,7 @@ class SongPageParser(BasePageParser):
         self,
         soup: BeautifulSoup,
         url: str,
-        target_song_name: str = None,
+        target_song_name: str | None = None,
     ):
         super().__init__(soup, url)
         self.song_id = url.split("#", 1)[1] if "#" in url else None
@@ -571,14 +571,13 @@ class SongPageParser(BasePageParser):
                 logger.debug(f"Matched by song_id: {self.song_id}")
                 return track
 
-            if self.target_song_name:
-                if (
-                    track["name"].lower().strip()
-                    == self.target_song_name.lower().strip()
-                ):
-                    self.song_id = track_id
-                    logger.debug(f"Matched by name: '{track['name']}'")
-                    return track
+            if self.target_song_name and (
+                track["name"].lower().strip()
+                == self.target_song_name.lower().strip()
+            ):
+                self.song_id = track_id
+                logger.debug(f"Matched by name: '{track['name']}'")
+                return track
 
         logger.debug("No song found matching criteria")
         return None
