@@ -25,7 +25,15 @@ from discord_metadata import (
 
 from ..core.api import BandAPI, LabelAPI
 from ..core.client import MetalArchivesClient
-from .common import ENTITY_TYPES, LAZY_FETCHERS, band_origin, build_filters, make_apis, styles_transform
+from .common import (
+    ENTITY_TYPES,
+    LAZY_FETCHERS,
+    band_origin,
+    build_filters,
+    make_apis,
+    mode_label,
+    styles_transform,
+)
 
 # ─── Metal Archives branding ────────────────────────────────────────────────
 
@@ -263,19 +271,22 @@ label_def = EntityDef(
 engine = DisplayEngine()
 engine.register(band_def, album_def, artist_def, song_def, label_def)
 
-_ma_client = MetalArchivesClient()
-_apis = {k: SyncAPI(v) for k, v in make_apis(_ma_client).items()}
 
-navigator = BaseNavigator(
-    engine,
-    apis=_apis,
-    lazy_fetchers=LAZY_FETCHERS,
-    ephemeral=False,
-    placeholder="Browse sections & navigate\u2026",
-    search_kwargs={"exact_match": False},
-)
+def _build_bot() -> MetadataBot:
+    client = MetalArchivesClient()
+    apis = {k: SyncAPI(v) for k, v in make_apis(client).items()}
+    navigator = BaseNavigator(
+        engine,
+        apis=apis,
+        lazy_fetchers=LAZY_FETCHERS,
+        ephemeral=False,
+        placeholder="Browse sections & navigate\u2026",
+        search_kwargs={"exact_match": False},
+    )
+    return MetadataBot(navigator, on_close=client.close)
 
-bot = MetadataBot(navigator, on_close=_ma_client.close)
+
+bot: MetadataBot  # Initialized in main(); referenced by slash command handlers below.
 
 # ─── Advanced search helper ─────────────────────────────────────────────────
 
@@ -460,17 +471,15 @@ async def cmd_recent(
         else ["created", "modified"]
     )
 
-    # Pre-fetch totals to build source labels
     totals = {}
     for m in modes:
         _, totals[m] = await asyncio.to_thread(raw_api.fetch_recent_page, m, month)
 
-    def _mode_label(m):
-        prefix = "New" if m == "created" else "Modified"
-        return f"{prefix} {entity_type}s ({totals[m]})"
-
     sources = [
-        (_mode_label(m), lambda s, c, m=m: raw_api.fetch_recent_page(m, month, s, c))
+        (
+            mode_label(m, entity_type, totals[m]),
+            lambda s, c, m=m: raw_api.fetch_recent_page(m, month, s, c),
+        )
         for m in modes
     ]
 
@@ -489,13 +498,14 @@ async def cmd_upcoming(interaction: discord.Interaction):
     )
 
 
-bot.tree.add_command(metallum)
-
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
 def main():
     """Run the Metal Archives Discord bot."""
+    global bot
+    bot = _build_bot()
+    bot.tree.add_command(metallum)
     bot.run_with_args("DISCORD_TOKEN")
 
 

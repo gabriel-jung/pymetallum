@@ -28,6 +28,11 @@ def styles_transform(styles) -> str:
     return ", ".join(styles) if styles else ""
 
 
+def mode_label(mode: str, entity_type: str, count: int) -> str:
+    """Format a menu label like 'New bands (42)' or 'Modified labels (7)'."""
+    return f"{'New' if mode == 'created' else 'Modified'} {entity_type}s ({count})"
+
+
 # ─── Lazy fetchers ───────────────────────────────────────────────────────────
 
 LAZY_FETCHERS = {

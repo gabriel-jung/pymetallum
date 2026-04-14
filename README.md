@@ -13,17 +13,17 @@ Requires Python 3.12+.
 ### Terminal CLI
 
 ```bash
-uv tool install pymetallum[cli]
+uv tool install 'pymetallum[cli]'
 # or
-pip install pymetallum[cli]
+pip install 'pymetallum[cli]'
 ```
 
 ### Discord bot
 
 ```bash
-uv tool install pymetallum[discord]
+uv tool install 'pymetallum[discord]'
 # or
-pip install pymetallum[discord]
+pip install 'pymetallum[discord]'
 ```
 
 Create a bot application at the [Discord Developer Portal](https://discord.com/developers/applications),

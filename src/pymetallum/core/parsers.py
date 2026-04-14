@@ -281,11 +281,9 @@ class AlbumPageParser(BasePageParser):
             if len(cells) < 4 or not cells[0].text.strip().endswith("."):
                 continue
 
-            # Song ID from anchor
             anchor = cells[0].find("a", class_="anchor")
             song_id = anchor.get("name") if anchor else None
 
-            # Lyrics availability and notes from 4th cell
             has_lyrics = bool(
                 cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton"))
             )
@@ -387,7 +385,6 @@ class ArtistPageParser(BasePageParser):
         if not bio_section:
             return None
 
-        # Remove the "Biography" heading before extracting text
         h2 = bio_section.find("h2")
         if h2:
             h2.extract()

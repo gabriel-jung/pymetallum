@@ -40,6 +40,7 @@ from .common import (
     band_origin,
     build_filters,
     make_apis,
+    mode_label,
     styles_transform,
 )
 
@@ -72,11 +73,6 @@ def _label_footer_sub_labels(d: dict) -> str | None:
         return None
     names = ", ".join(sub["name"] for sub in subs)
     return f"[bold]Sub-labels:[/bold] {names}"
-
-
-def _mode_label(mode: str, entity_type: str, count: int) -> str:
-    """Format a menu label like 'New bands (42)' or 'Modified labels (7)'."""
-    return f"{'New' if mode == 'created' else 'Modified'} {entity_type}s ({count})"
 
 
 _MEMBER_COLUMNS = [
@@ -533,7 +529,7 @@ def _run_listing(navigator, entity_type, args):
             return
 
         browsers = [
-            (_mode_label(mode, entity_type, len(fetched[mode])), list_fetcher(fetched[mode]))
+            (mode_label(mode, entity_type, len(fetched[mode])), list_fetcher(fetched[mode]))
             for mode in modes
         ]
     else:
@@ -556,7 +552,7 @@ def _run_listing(navigator, entity_type, args):
                 _, totals[mode] = api.fetch_recent_page(mode, month)
 
         browsers = [
-            (_mode_label(mode, entity_type, totals[mode]),
+            (mode_label(mode, entity_type, totals[mode]),
              lambda s, c, mode=mode: api.fetch_recent_page(mode, month, s, c))
             for mode in modes
         ]

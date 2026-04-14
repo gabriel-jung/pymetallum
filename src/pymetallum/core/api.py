@@ -5,8 +5,11 @@ that handles searching, fetching detail pages, and parsing AJAX endpoints.
 All data is returned as plain dicts with a ``_type`` discriminator key.
 """
 
+import inspect
+from collections import OrderedDict
 from collections.abc import Callable
 from datetime import date
+from functools import lru_cache
 from typing import Any, ClassVar
 
 from bs4 import BeautifulSoup
@@ -45,6 +48,11 @@ STATUS_MAP = {
 def _html_text(s: str) -> str:
     """Extract and normalize text from an HTML fragment (strips tags and entities)."""
     return normalize_text(BeautifulSoup(s, "html.parser").get_text())
+
+
+@lru_cache(maxsize=None)
+def _parser_kwargs(parser_class: Callable) -> frozenset[str]:
+    return frozenset(inspect.signature(parser_class.__init__).parameters) - {"self"}
 
 
 class BaseAPI:
@@ -175,19 +183,47 @@ class BaseAPI:
         self, mode: str, month: str | None, batch_size: int,
     ) -> list[dict[str, Any]]:
         """Fetch all items from an archive listing (created or modified)."""
+        return self._paginate(
+            lambda start: self.fetch_recent_page(mode, month, start, batch_size),
+            batch_size=batch_size,
+            label=f"{mode} items for {month}",
+            verbose=True,
+        )
+
+    def _paginate(
+        self,
+        fetch_page: Callable[[int], tuple[list[dict[str, Any]], int]],
+        batch_size: int,
+        label: str,
+        verbose: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Accumulate all pages from a ``(start) -> (items, total)`` fetcher.
+
+        Args:
+            fetch_page: Callable taking a start offset, returning
+                ``(items, total_records)``. Use a closure to bind endpoint,
+                filter, and row-parser context.
+            batch_size: Page size passed in by the closure; used to advance start.
+            label: Human-readable noun phrase for progress logs (e.g.
+                ``"bands for letter A"``, ``"upcoming releases"``).
+            verbose: If True, log start/progress/completion.
+        """
         all_items: list[dict[str, Any]] = []
         start = 0
         while True:
-            results, total = self.fetch_recent_page(mode, month, start, batch_size)
-            if start == 0:
-                logger.info(f"Fetching {total} {mode} items for {month}")
+            results, total = fetch_page(start)
+            if start == 0 and verbose:
+                logger.info(f"Fetching {total} {label}")
             if not results:
                 break
             all_items.extend(results)
+            if verbose and len(all_items) < total:
+                logger.debug(f"  Progress: {len(all_items)}/{total}")
             if len(all_items) >= total:
                 break
             start += batch_size
-        logger.success(f"Completed: {len(all_items)} {mode} items for {month}")
+        if verbose:
+            logger.success(f"Completed: {len(all_items)} {label}")
         return all_items
 
     def _fetch_and_parse(
@@ -211,13 +247,10 @@ class BaseAPI:
         Returns:
             Parsed entity dict with ``_type`` key, or None on fetch failure.
         """
-        import inspect
-
         html = self._client.get(url)
         if not html:
             return None
-        sig = inspect.signature(parser_class.__init__)
-        valid = set(sig.parameters) - {"self"}
+        valid = _parser_kwargs(parser_class)
         filtered = {k: v for k, v in kwargs.items() if k in valid}
         parser = parser_class(BeautifulSoup(html, "html.parser"), url, **filtered)
         return parser.parse()
@@ -629,44 +662,20 @@ class BandAPI(BaseAPI):
             List of band dicts with ``name``, ``url``, ``id``, ``country``,
             ``genre``, and ``status``.
         """
-        all_bands = []
-        start = 0
         url = f"{self._base_url}/browse/ajax-letter/l/{letter}/json/1"
-        total_records = None
 
-        while True:
+        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
-
             data = self._client.get_json(url, params, crawl=True)
             if not data:
-                break
+                return [], 0
+            rows = data.get("aaData", [])
+            results = [b for row in rows if (b := self._parse_band_list_row(row))]
+            return results, data.get("iTotalRecords", 0)
 
-            bands = data.get("aaData", [])
-            total_records = data.get("iTotalRecords", 0)
-
-            if start == 0 and verbose:
-                logger.info(f"Fetching {total_records} bands for letter: {letter}")
-
-            if not bands:
-                break
-
-            for row in bands:
-                band = self._parse_band_list_row(row)
-                if band:
-                    all_bands.append(band)
-
-            if verbose and len(all_bands) < total_records:
-                logger.debug(f"  Progress: {len(all_bands)}/{total_records}")
-
-            if len(all_bands) >= total_records:
-                break
-
-            start += batch_size
-
-        if verbose:
-            logger.success(f"Completed {letter}: {len(all_bands)} bands")
-
-        return all_bands
+        return self._paginate(
+            fetch_page, batch_size, label=f"bands for letter: {letter}", verbose=verbose,
+        )
 
     def fetch_all_bands_list(self) -> list[dict[str, Any]]:
         """Fetch all bands from the alphabetical listing across all 28 letters.
@@ -904,22 +913,14 @@ class AlbumAPI(BaseAPI):
         Returns:
             List of album dicts.
         """
-        all_releases = []
-        start = 0
-        while True:
-            results, total = self.fetch_upcoming_page(
-                start, batch_size, from_date, to_date, include_versions
-            )
-            if start == 0:
-                logger.info(f"Fetching {total} upcoming releases")
-            if not results:
-                break
-            all_releases.extend(results)
-            if len(all_releases) >= total:
-                break
-            start += batch_size
-        logger.success(f"Completed: {len(all_releases)} upcoming releases")
-        return all_releases
+        return self._paginate(
+            lambda start: self.fetch_upcoming_page(
+                start, batch_size, from_date, to_date, include_versions,
+            ),
+            batch_size=batch_size,
+            label="upcoming releases",
+            verbose=True,
+        )
 
     @staticmethod
     def _parse_upcoming_row(row: list[str]) -> dict[str, Any] | None:
@@ -973,16 +974,10 @@ class ArtistAPI(BaseAPI):
             "name": normalize_text(name_link.text),
             "url": name_link.get("href", ""),
             "real_name": (row[1].strip() or None) if len(row) > 1 else None,
-            "country": (
-                normalize_text(BeautifulSoup(row[2], "html.parser").get_text())
-                if len(row) > 2
-                else None
-            ),
+            "country": _html_text(row[2]) if len(row) > 2 else None,
         }
         if len(row) > 3 and row[3].strip():
-            result["bands"] = normalize_text(
-                BeautifulSoup(row[3], "html.parser").get_text()
-            )
+            result["bands"] = _html_text(row[3])
         return result
 
     def search(self, query: str, exact_match: bool = True) -> list[dict]:
@@ -1135,43 +1130,20 @@ class LabelAPI(BaseAPI):
             List of label dicts with ``name``, ``url``, ``id``, ``country``,
             ``status``, and ``specialisation``.
         """
-        all_labels = []
-        start = 0
         url = f"{self._base_url}/label/ajax-list/l/{letter}/json/1"
-        total_records = None
 
-        while True:
+        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
             data = self._client.get_json(url, params, crawl=True)
             if not data:
-                break
-
+                return [], 0
             rows = data.get("aaData", [])
-            total_records = data.get("iTotalRecords", 0)
+            results = [lbl for row in rows if (lbl := self._parse_label_list_row(row))]
+            return results, data.get("iTotalRecords", 0)
 
-            if start == 0 and verbose:
-                logger.info(f"Fetching {total_records} labels for letter: {letter}")
-
-            if not rows:
-                break
-
-            for row in rows:
-                label = self._parse_label_list_row(row)
-                if label:
-                    all_labels.append(label)
-
-            if verbose and len(all_labels) < total_records:
-                logger.debug(f"  Progress: {len(all_labels)}/{total_records}")
-
-            if len(all_labels) >= total_records:
-                break
-
-            start += batch_size
-
-        if verbose:
-            logger.success(f"Completed {letter}: {len(all_labels)} labels")
-
-        return all_labels
+        return self._paginate(
+            fetch_page, batch_size, label=f"labels for letter: {letter}", verbose=verbose,
+        )
 
     def _parse_label_list_row(self, row: list[str]) -> dict[str, Any] | None:
         """Parse a row from the label alphabetical listing (7 columns).
@@ -1273,9 +1245,11 @@ class SongAPI(BaseAPI):
     without the caller needing to pass the song name explicitly.
     """
 
+    _SEARCH_CACHE_MAX = 512
+
     def __init__(self, client: MetalArchivesClient):
         super().__init__(client)
-        self._last_search_results = {}
+        self._last_search_results: OrderedDict[str, str] = OrderedDict()
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if len(row) < 4:
@@ -1328,6 +1302,9 @@ class SongAPI(BaseAPI):
 
         for song in results:
             self._last_search_results[song["url"]] = song["name"]
+            self._last_search_results.move_to_end(song["url"])
+        while len(self._last_search_results) > self._SEARCH_CACHE_MAX:
+            self._last_search_results.popitem(last=False)
 
         return results
 
@@ -1374,7 +1351,6 @@ class SongAPI(BaseAPI):
         if not song:
             return None
 
-        # Update song ID and URL from the matched tracklist entry
         if parser.song_id:
             song["id"] = parser.song_id
             song["url"] = f"{album_url}#{parser.song_id}"
