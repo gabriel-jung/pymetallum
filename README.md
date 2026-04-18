@@ -13,9 +13,9 @@ Requires Python 3.12+.
 ### Terminal CLI
 
 ```bash
-uv tool install 'pymetallum[cli]'
+uv tool install pymetallum
 # or
-pip install 'pymetallum[cli]'
+pip install pymetallum
 ```
 
 ### Discord bot
@@ -56,20 +56,12 @@ Slash commands (all under `/metallum`):
 | `/metallum recent` | Recently added/modified bands or labels |
 | `/metallum upcoming` | Upcoming album releases |
 
-### Library only
-
-The `core` module has no UI dependencies:
-
-```bash
-pip install pymetallum
-```
-
 ### Development
 
 ```bash
 git clone https://github.com/gabriel-jung/pymetallum.git
 cd pymetallum
-uv sync  # installs both [cli] and [discord] extras
+uv sync  # installs dev deps + [discord] extra
 ```
 
 ## Usage

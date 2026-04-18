@@ -5,7 +5,7 @@ build-backend = "uv_build"
 
 [project]
 name = "pymetallum"
-version = "0.5.1"
+version = "0.5.2"
 authors = [
   { name = "Gabriel Jung", email = "gabriel.jung@protonmail.com" },
 ]
@@ -28,13 +28,11 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "curl-cffi>=0.14.0",
     "loguru>=0.7.3",
+    "rich-metadata>=0.1.2",
 ]
 
 
 [project.optional-dependencies]
-cli = [
-    "rich-metadata>=0.1.2",
-]
 discord = [
     "discord.py>=2.7.0",
     "discord-metadata>=0.1.0",
@@ -73,11 +71,7 @@ dev = [
     "pre-commit>=3.5.0",
     "pytest>=8.0",
     "ruff>=0.14.3",
-    { include-group = "cli" },
     { include-group = "discord" },
-]
-cli = [
-    "rich-metadata>=0.1.2",
 ]
 discord = [
     "discord.py>=2.7.0",
