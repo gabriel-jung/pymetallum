@@ -212,10 +212,10 @@ def _extract_json(text: str) -> dict:
     wrap it in HTML tags (typically ``<pre>`` or inside ``<body>``). This
     function tries each extraction strategy in order:
 
-    1. Direct parse — if the text starts with ``{`` or ``[``.
-    2. ``<pre>`` tag — extract text content from the first ``<pre>`` element.
-    3. ``<body>`` tag — extract text content from the ``<body>`` element.
-    4. Fallback — try parsing the raw text as-is.
+    1. Direct parse: if the text starts with ``{`` or ``[``.
+    2. ``<pre>`` tag: extract text content from the first ``<pre>`` element.
+    3. ``<body>`` tag: extract text content from the ``<body>`` element.
+    4. Fallback: try parsing the raw text as-is.
 
     Raises:
         json.JSONDecodeError: If none of the strategies produce valid JSON.

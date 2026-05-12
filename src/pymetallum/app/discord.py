@@ -307,7 +307,7 @@ async def _advanced_search_and_navigate(
     """Run advanced search in a thread and navigate the results."""
     await interaction.response.defer()
 
-    raw_api = bot.navigator.apis[entity_type]._sync
+    raw_api = bot.navigator.apis[entity_type].raw
     results, _total = await asyncio.to_thread(
         raw_api.advanced_search, start=0, count=25, **filters
     )
@@ -427,7 +427,7 @@ async def cmd_search(interaction: discord.Interaction, query: str):
 @metallum.command(name="random", description="Show a random band")
 async def cmd_random(interaction: discord.Interaction):
     await interaction.response.defer()
-    raw_api = bot.navigator.apis["band"]._sync
+    raw_api = bot.navigator.apis["band"].raw
     entity = await asyncio.to_thread(raw_api.get_random)
     if not entity:
         await interaction.followup.send("Could not fetch a random band.")
@@ -463,7 +463,7 @@ async def cmd_recent(
     await interaction.response.defer()
     entity_type = type.value if type else "band"
     mode_val = mode.value if mode else "both"
-    raw_api = bot.navigator.apis[entity_type]._sync
+    raw_api = bot.navigator.apis[entity_type].raw
 
     modes = (
         ["created"] if mode_val == "created"
@@ -489,7 +489,7 @@ async def cmd_recent(
 @metallum.command(name="upcoming", description="Upcoming album releases")
 async def cmd_upcoming(interaction: discord.Interaction):
     await interaction.response.defer()
-    raw_api = bot.navigator.apis["album"]._sync
+    raw_api = bot.navigator.apis["album"].raw
 
     await bot.navigator.browse(
         interaction,

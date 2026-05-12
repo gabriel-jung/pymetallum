@@ -13,7 +13,7 @@ from ..core.countries import resolve_country
 
 ENTITY_TYPES = ["band", "album", "artist", "song", "label"]
 
-# ─── Display transforms (plain text — UI layers may wrap with markup) ────────
+# ─── Display transforms (plain text; UI layers may wrap with markup) ────────
 
 
 def band_origin(d: dict) -> str:
@@ -115,7 +115,7 @@ def build_filters(entity_type: str, **kwargs: str | None) -> dict[str, str]:
         filters["country"] = resolve_country(country) or country
 
     year = kwargs.get("year")
-    if year:
+    if year and entity_type in YEAR_PARAMS:
         param_from, param_to = YEAR_PARAMS[entity_type]
         f, t = parse_year_range(year)
         filters[param_from] = f

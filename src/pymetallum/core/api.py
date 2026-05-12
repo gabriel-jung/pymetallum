@@ -9,7 +9,7 @@ import inspect
 from collections import OrderedDict
 from collections.abc import Callable
 from datetime import date
-from functools import lru_cache
+from functools import cache
 from typing import Any, ClassVar
 
 from bs4 import BeautifulSoup
@@ -50,7 +50,7 @@ def _html_text(s: str) -> str:
     return normalize_text(BeautifulSoup(s, "html.parser").get_text())
 
 
-@lru_cache(maxsize=None)
+@cache
 def _parser_kwargs(parser_class: Callable) -> frozenset[str]:
     return frozenset(inspect.signature(parser_class.__init__).parameters) - {"self"}
 
@@ -371,7 +371,7 @@ class BaseAPI:
 
         Metal Archives serves lyrics as an HTML fragment from
         ``/release/ajax-view-lyrics/id/{song_id}``. The response is stripped
-        of HTML tags and validated — short strings, loading placeholders, and
+        of HTML tags and validated: short strings, loading placeholders, and
         error messages are discarded.
 
         Args:
@@ -1235,7 +1235,7 @@ class LabelAPI(BaseAPI):
 class SongAPI(BaseAPI):
     """Search and fetch individual songs with lyrics.
 
-    Songs are unique in that they don't have their own detail pages — they
+    Songs are unique in that they don't have their own detail pages; they
     live inside album pages. The ``search()`` method returns song entries
     pointing to their parent album URL, and ``get()`` fetches that album
     page and extracts the specific song from the tracklist.

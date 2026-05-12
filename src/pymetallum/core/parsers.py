@@ -491,7 +491,7 @@ class ArtistPageParser(BasePageParser):
 class SongPageParser(BasePageParser):
     """Parser for extracting a single song from an album page.
 
-    Songs don't have their own pages on Metal Archives — they live inside
+    Songs don't have their own pages on Metal Archives; they live inside
     album pages. This parser locates a specific song in the tracklist by
     matching either a fragment ID (``#song_id``) or the song name.
 
@@ -625,14 +625,21 @@ class LabelPageParser(BasePageParser):
         if logo_img:
             label["logo_url"] = logo_img.get("src")
 
+        label["current_roster"] = []
+        label["past_roster"] = []
+        label["releases"] = []
         try:
-            label["current_roster"] = self._parse_roster(
-                self.roster_data.get("current", [])
-            )
+            label["current_roster"] = self._parse_roster(self.roster_data.get("current", []))
+        except Exception as e:
+            logger.warning(f"Failed to parse current roster for label {label['id']}: {e}")
+        try:
             label["past_roster"] = self._parse_roster(self.roster_data.get("past", []))
+        except Exception as e:
+            logger.warning(f"Failed to parse past roster for label {label['id']}: {e}")
+        try:
             label["releases"] = self._parse_releases()
         except Exception as e:
-            logger.warning(f"Failed to load AJAX data for label {label['id']}: {e}")
+            logger.warning(f"Failed to parse releases for label {label['id']}: {e}")
 
         return label
 

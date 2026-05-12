@@ -1,4 +1,4 @@
-"""CLI entry point for metallum — an interactive Metal Archives browser.
+"""CLI entry point for metallum, an interactive Metal Archives browser.
 
 Run ``metallum --help`` for usage examples.
 """
@@ -23,6 +23,7 @@ from rich_metadata import (
     SummaryField,
     TableColumn,
     configure_logging,
+    link,
     list_fetcher,
     months_in_range,
     parse_date_args,
@@ -123,7 +124,10 @@ band_def = EntityDef(
     header_links=[
         HeaderLink("Label: {current_label}", "label", ref_key="label_url"),
     ],
-    footer=["url", lambda d: d.get("logo_url") or d.get("photo_url")],
+    footer=[
+        lambda d: link("page", d.get("url")),
+        lambda d: link("logo", d.get("logo_url") or d.get("photo_url")),
+    ],
 )
 
 album_def = EntityDef(
@@ -181,7 +185,10 @@ album_def = EntityDef(
             else None,
         ),
     ],
-    footer=["url", "cover_url"],
+    footer=[
+        lambda d: link("page", d.get("url")),
+        lambda d: link("cover", d.get("cover_url")),
+    ],
 )
 
 artist_def = EntityDef(
@@ -215,7 +222,10 @@ artist_def = EntityDef(
             ],
         ),
     ],
-    footer=["url", "photo_url"],
+    footer=[
+        lambda d: link("page", d.get("url")),
+        lambda d: link("photo", d.get("photo_url")),
+    ],
 )
 
 song_def = EntityDef(
@@ -234,7 +244,7 @@ song_def = EntityDef(
     sections=[
         SectionDef("lyrics", lazy=True),
     ],
-    footer=["url"],
+    footer=[lambda d: link("page", d.get("url"))],
     auto_full=True,
 )
 
@@ -278,7 +288,11 @@ label_def = EntityDef(
         ),
         SectionDef("notes"),
     ],
-    footer=[_label_footer_sub_labels, "url", "logo_url"],
+    footer=[
+        _label_footer_sub_labels,
+        lambda d: link("page", d.get("url")),
+        lambda d: link("logo", d.get("logo_url")),
+    ],
 )
 
 # ─── Engine & navigator setup ────────────────────────────────────────────────
@@ -491,8 +505,8 @@ def _run_listing(navigator, entity_type, args):
             return
         navigator.browse(
             fetch_page=lambda s, c: api.fetch_upcoming_page(
-            s, c, from_date=args.from_date, to_date=args.to_date,
-        ),
+                s, c, from_date=args.from_date, to_date=args.to_date,
+            ),
             title="Upcoming releases",
             full=args.full,
         )
@@ -619,9 +633,6 @@ def main():
 
                 if name_query and search_type in NAME_PARAM:
                     filters[NAME_PARAM[search_type]] = name_query
-
-                if not filters:
-                    parser.error("No valid filters provided.")
 
                 _run_advanced_search(navigator, search_type, filters, args)
 
