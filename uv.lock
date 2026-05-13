@@ -766,7 +766,7 @@ wheels = [
 
 [[package]]
 name = "pymetallum"
-version = "0.5.3"
+version = "0.5.4"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -805,7 +805,7 @@ requires-dist = [
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "python-dotenv", marker = "extra == 'discord'", specifier = ">=1.0.0" },
-    { name = "rich-metadata", specifier = ">=0.1.7" },
+    { name = "rich-metadata", specifier = ">=0.1.8" },
 ]
 provides-extras = ["discord"]
 
@@ -923,15 +923,15 @@ wheels = [
 
 [[package]]
 name = "rich-metadata"
-version = "0.1.7"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/44/1b2cc53771217d1491ea12517d40189799edcd3906efb0af2972ca896e55/rich_metadata-0.1.7.tar.gz", hash = "sha256:09b034257f6141529bae90b004c1cbff17dcf2d79363af18518ee978b675bf2f", size = 18853, upload-time = "2026-05-12T23:17:47.272Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/de/f88c7737d96fba53cc54e81ca575b6603ec1007c177f507ae47b87d29444/rich_metadata-0.1.8.tar.gz", hash = "sha256:87da068520292795abfe398b8918c3718ae532ed92e2f9e1205d23f24cbd19cf", size = 19110, upload-time = "2026-05-13T09:49:04.002Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/3a/3920c036fc97bb60c8caf2193105d28d1fb35ec33ad0229ee8260f4e8b69/rich_metadata-0.1.7-py3-none-any.whl", hash = "sha256:9b353f559178b4f71cafd2a140c327ac7ce1860768c50d73a3930002ed4e66bb", size = 22462, upload-time = "2026-05-12T23:17:45.591Z" },
+    { url = "https://files.pythonhosted.org/packages/09/f9/9235e812bf8e722dc37e070818c031bd8868c20391e7b8303125a023429a/rich_metadata-0.1.8-py3-none-any.whl", hash = "sha256:402bab6c8ad2b050e144f6015498208a1fe9205aa951d78f2201539137733a77", size = 22719, upload-time = "2026-05-13T09:49:02.992Z" },
 ]
 
 [[package]]

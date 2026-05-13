@@ -23,7 +23,7 @@ from rich_metadata import (
     SummaryField,
     TableColumn,
     configure_logging,
-    link,
+    links_line,
     list_fetcher,
     months_in_range,
     parse_date_args,
@@ -125,8 +125,10 @@ band_def = EntityDef(
         HeaderLink("Label: {current_label}", "label", ref_key="label_url"),
     ],
     footer=[
-        lambda d: link("page", d.get("url")),
-        lambda d: link("logo", d.get("logo_url") or d.get("photo_url")),
+        lambda d: links_line(
+            ("page", d.get("url")),
+            ("logo", d.get("logo_url") or d.get("photo_url")),
+        ),
     ],
 )
 
@@ -186,8 +188,10 @@ album_def = EntityDef(
         ),
     ],
     footer=[
-        lambda d: link("page", d.get("url")),
-        lambda d: link("cover", d.get("cover_url")),
+        lambda d: links_line(
+            ("page", d.get("url")),
+            ("cover", d.get("cover_url")),
+        ),
     ],
 )
 
@@ -223,8 +227,10 @@ artist_def = EntityDef(
         ),
     ],
     footer=[
-        lambda d: link("page", d.get("url")),
-        lambda d: link("photo", d.get("photo_url")),
+        lambda d: links_line(
+            ("page", d.get("url")),
+            ("photo", d.get("photo_url")),
+        ),
     ],
 )
 
@@ -244,7 +250,7 @@ song_def = EntityDef(
     sections=[
         SectionDef("lyrics", lazy=True),
     ],
-    footer=[lambda d: link("page", d.get("url"))],
+    footer=[lambda d: links_line(("page", d.get("url")))],
     auto_full=True,
 )
 
@@ -290,8 +296,10 @@ label_def = EntityDef(
     ],
     footer=[
         _label_footer_sub_labels,
-        lambda d: link("page", d.get("url")),
-        lambda d: link("logo", d.get("logo_url")),
+        lambda d: links_line(
+            ("page", d.get("url")),
+            ("logo", d.get("logo_url")),
+        ),
     ],
 )
 
