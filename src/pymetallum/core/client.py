@@ -1,6 +1,7 @@
 """HTTP client for Metal Archives with Cloudflare bypass via curl_cffi."""
 
 import json
+import random
 import time
 from pathlib import Path
 from urllib.parse import urlencode
@@ -96,21 +97,44 @@ class MetalArchivesClient:
         return result.content
 
     def _request(self, url: str, params: dict | None = None, crawl: bool = False):
-        """Internal: execute a GET request and return the response object, or None."""
+        """Internal: execute a GET request and return the response object, or None.
+
+        On HTTP 403 (Cloudflare challenge), the session is rebuilt once with a
+        randomized 10-60s backoff and the request is retried. Repeated 403s
+        return None.
+        """
         self._enforce_rate_limit(crawl=crawl)
         if params:
             url = f"{url}?{urlencode(params, doseq=True)}"
-        try:
-            response = self._session.get(url, timeout=REQUEST_TIMEOUT)
-            if response.status_code == 404:
-                raise NotFoundError(f"404 Not Found: {url}")
-            response.raise_for_status()
-            return response
-        except NotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Request failed for {url}: {e}")
-            return None
+        for attempt in range(2):
+            try:
+                response = self._session.get(url, timeout=REQUEST_TIMEOUT)
+                if response.status_code == 404:
+                    raise NotFoundError(f"404 Not Found: {url}")
+                if response.status_code == 403 and attempt == 0:
+                    backoff = random.uniform(10, 60)
+                    logger.warning(
+                        f"403 for {url}, rebuilding session, sleeping {backoff:.1f}s"
+                    )
+                    try:
+                        self._session.close()
+                    except Exception:
+                        pass
+                    time.sleep(backoff)
+                    self._session = curl_requests.Session(impersonate="chrome")
+                    try:
+                        self._session.get(self.base_url, timeout=REQUEST_TIMEOUT)
+                    except Exception as warmup_err:
+                        logger.warning(f"Warmup after 403 failed: {warmup_err}")
+                    continue
+                response.raise_for_status()
+                return response
+            except NotFoundError:
+                raise
+            except Exception as e:
+                logger.error(f"Request failed for {url}: {e}")
+                return None
+        return None
 
     def get_json(
         self, url: str, params: dict | None = None, crawl: bool = False
