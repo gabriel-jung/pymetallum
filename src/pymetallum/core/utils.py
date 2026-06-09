@@ -98,7 +98,7 @@ def extract_cell(cell) -> tuple[str, str]:
         return cell, ""
     text = cell.get("text", "")
     links = cell.get("links", [])
-    url = links[0]["href"] if links else ""
+    url = links[0].get("href", "") if links else ""
     return text, url
 
 

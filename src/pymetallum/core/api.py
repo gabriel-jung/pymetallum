@@ -288,7 +288,7 @@ class BaseAPI:
         ]
 
         if exact_match:
-            return [r for r in results if r["name"].lower() == query.lower()]
+            return [r for r in results if r.get("name", "").lower() == query.lower()]
         return results
 
     def _generic_advanced_search(
@@ -1355,7 +1355,7 @@ class SongAPI(BaseAPI):
             song["id"] = parser.song_id
             song["url"] = f"{album_url}#{parser.song_id}"
 
-        if song.get("has_lyrics") and kwargs.get("with_lyrics", True):
+        if song.get("has_lyrics") and song.get("id") and kwargs.get("with_lyrics", True):
             lyrics = self.fetch_lyrics(song["id"])
             if lyrics:
                 song["lyrics"] = lyrics

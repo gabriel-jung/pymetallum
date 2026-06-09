@@ -177,7 +177,8 @@ class AlbumPageParser(BasePageParser):
     def parse(self) -> dict | None:
         """Parse album page into a dict with metadata, tracklist, and lineup."""
         album_name_tag = self.soup.select_one("h1.album_name a")
-        band_tags = self.soup.find("h2", class_="band_name").find_all("a")
+        band_name_tag = self.soup.find("h2", class_="band_name")
+        band_tags = band_name_tag.find_all("a") if band_name_tag else []
         if not album_name_tag or not band_tags:
             return None
         band_names = " / ".join(tag.text.strip() for tag in band_tags)

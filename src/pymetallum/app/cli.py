@@ -58,8 +58,10 @@ STATUS_COLORS = {
 
 def _status_transform(status: str) -> str:
     """Color-code band status (e.g. Active → green, Split-up → red)."""
-    color = STATUS_COLORS.get(status, "")
-    return f"[{color}]{status}[/{color}]" if status else ""
+    color = STATUS_COLORS.get(status)
+    if not status:
+        return ""
+    return f"[{color}]{status}[/{color}]" if color else status
 
 
 def _album_title(d: dict) -> str:

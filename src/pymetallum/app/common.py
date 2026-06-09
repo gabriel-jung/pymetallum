@@ -6,6 +6,8 @@ transforms, lazy fetchers, filter helpers, and constants are shared here.
 
 from __future__ import annotations
 
+from loguru import logger
+
 from ..core.api import STATUS_MAP, AlbumAPI, ArtistAPI, BandAPI, LabelAPI, SongAPI
 from ..core.countries import resolve_country
 
@@ -123,7 +125,11 @@ def build_filters(entity_type: str, **kwargs: str | None) -> dict[str, str]:
 
     status = kwargs.get("status")
     if status:
-        filters["status"] = STATUS_MAP.get(status.lower(), "")
+        code = STATUS_MAP.get(status.lower())
+        if code:
+            filters["status"] = code
+        else:
+            logger.warning(f"Unknown status {status!r}, ignoring filter")
 
     themes = kwargs.get("themes")
     if themes:
