@@ -31,7 +31,7 @@ from rich_metadata import (
 )
 
 from ..core.api import STATUS_MAP, BandAPI, LabelAPI
-from ..core.client import MetalArchivesClient
+from ..core.client import MetalArchivesClient, NotFoundError
 from ..core.countries import resolve_country
 from .common import (
     ENTITY_TYPES,
@@ -505,6 +505,11 @@ def _run_listing(navigator, entity_type, args):
     api = navigator.apis[entity_type]
 
     if args.upcoming:
+        if args.month:
+            console.print(
+                "[yellow]--month has no effect with --upcoming; "
+                "use --from/--to instead.[/yellow]"
+            )
         if args.json:
             with console.status("Fetching upcoming releases..."):
                 releases = api.fetch_upcoming(from_date=args.from_date, to_date=args.to_date)
@@ -570,6 +575,9 @@ def _run_listing(navigator, entity_type, args):
             print(json.dumps(fetched, indent=2))
             return
 
+        # Only the record count is used here. The endpoint ignores the page-size
+        # parameter and always sends a full block, so there is nothing to save
+        # by asking for fewer rows.
         totals = {}
         with console.status(f"Fetching recent {entity_type}s ({month or 'this month'})..."):
             for mode in modes:
@@ -620,6 +628,11 @@ def main():
                 return
 
             elif args.upcoming:
+                if entity_type and entity_type != "album":
+                    console.print(
+                        f"[yellow]--upcoming only lists albums; "
+                        f"ignoring --{entity_type}.[/yellow]"
+                    )
                 _run_listing(navigator, "album", args)
                 return
 
@@ -660,5 +673,9 @@ def main():
                 )
         except (QuitSignal, KeyboardInterrupt):
             pass
+        except NotFoundError:
+            # Entity fetches are already softened by MissingTolerantAPI; this
+            # covers the random and listing paths, which call the API directly.
+            console.print("[red]That entry no longer exists on Metal Archives.[/red]")
 
 

@@ -38,33 +38,6 @@ class BasePageParser(ABC):
     def parse(self) -> dict | None:
         """Parse the page and return a structured dict, or None on failure."""
 
-    def _parse_artist_rows(self, container, row_selector="tr") -> list[dict]:
-        """Parse a table of artists with roles from a lineup container.
-
-        Args:
-            container: BeautifulSoup element containing the artist table.
-            row_selector: CSS selector for row elements within the container.
-
-        Returns:
-            List of artist dicts with ``_type``, ``name``, ``url``, ``id``,
-            and ``role``.
-        """
-        members = []
-        for row in container.select(row_selector):
-            cells = row.find_all("td")
-            if len(cells) < 2:
-                continue
-            name_link = cells[0].find("a")
-            if not name_link:
-                continue
-            artist = create_link_dict(name_link)
-            if not artist:
-                continue
-            artist["_type"] = "artist"
-            artist["role"] = safe_get_text(cells[1])
-            members.append(artist)
-        return members
-
 
 class BandPageParser(BasePageParser):
     """Parser for band detail pages.
@@ -115,8 +88,8 @@ class BandPageParser(BasePageParser):
         """Parse band members by lineup type (current/past/live).
 
         For each member, also extracts "see also" bands from the
-        ``lineupBandsRow`` that follows their row in the HTML. Done in a
-        single pass per lineup type.
+        ``lineupBandsRow`` that follows their row in the HTML. Attached during
+        the same walk, so members who happen to share a name stay distinct.
         """
         members = {}
 
@@ -125,17 +98,20 @@ class BandPageParser(BasePageParser):
             if not lineup_div:
                 continue
 
-            member_list = self._parse_artist_rows(lineup_div, "tr.lineupRow")
-
-            # Build a name→member lookup for attaching "see also" in one pass
-            members_by_name = {m["name"]: m for m in member_list}
+            member_list = []
             for row in lineup_div.select("tr.lineupRow"):
-                name_link = row.select_one("td a")
+                cells = row.find_all("td")
+                if len(cells) < 2:
+                    continue
+                name_link = cells[0].find("a")
                 if not name_link:
                     continue
-                name = safe_get_text(name_link)
-                if name not in members_by_name:
+                member = create_link_dict(name_link)
+                if not member:
                     continue
+                member["_type"] = "artist"
+                member["role"] = safe_get_text(cells[1])
+
                 sibling = row.find_next_sibling("tr")
                 if sibling and "lineupBandsRow" in sibling.get("class", []):
                     see_also = [
@@ -147,7 +123,9 @@ class BandPageParser(BasePageParser):
                         for a in sibling.find_all("a")
                     ]
                     if see_also:
-                        members_by_name[name]["see_also"] = see_also
+                        member["see_also"] = see_also
+
+                member_list.append(member)
 
             if member_list:
                 members[lineup_type] = member_list
@@ -275,9 +253,30 @@ class AlbumPageParser(BasePageParser):
         return reviews
 
     def _parse_tracklist(self) -> list[dict[str, Any]]:
-        """Parse the album tracklist with song IDs, durations, and lyrics flags."""
+        """Parse the album tracklist with song IDs, durations, and lyrics flags.
+
+        Scoped to the tracklist table: ``tr.odd``/``tr.even`` are used across
+        the whole page (the review list alone accounts for most of them), so a
+        page-wide selector would rely entirely on the per-row shape guards.
+
+        Multi-disc and multi-side releases mark boundaries with ``tr.discRow``
+        and ``tr.sideRow`` header rows, and restart track numbering at each
+        disc. The current heading is attached to every following track so those
+        repeated numbers stay unambiguous.
+        """
         tracks = []
-        for row in self.soup.select("tr.odd, tr.even"):
+        disc = None
+        side = None
+        for row in self.soup.select("table.table_lyrics tr"):
+            classes = row.get("class", [])
+            if "discRow" in classes:
+                disc = safe_get_text(row)
+                side = None
+                continue
+            if "sideRow" in classes:
+                side = safe_get_text(row)
+                continue
+
             cells = row.find_all("td")
             if len(cells) < 4 or not cells[0].text.strip().endswith("."):
                 continue
@@ -304,6 +303,10 @@ class AlbumPageParser(BasePageParser):
                 track["_type"] = "song"
             if note:
                 track["note"] = note
+            if disc:
+                track["disc"] = disc
+            if side:
+                track["side"] = side
 
             tracks.append(track)
 

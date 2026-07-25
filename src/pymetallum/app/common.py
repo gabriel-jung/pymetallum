@@ -6,9 +6,12 @@ transforms, lazy fetchers, filter helpers, and constants are shared here.
 
 from __future__ import annotations
 
+import functools
+
 from loguru import logger
 
 from ..core.api import STATUS_MAP, AlbumAPI, ArtistAPI, BandAPI, LabelAPI, SongAPI
+from ..core.client import NotFoundError
 from ..core.countries import resolve_country
 
 # ─── Entity types ────────────────────────────────────────────────────────────
@@ -40,22 +43,62 @@ def mode_label(mode: str, entity_type: str, count: int) -> str:
 LAZY_FETCHERS = {
     ("band", "description"): lambda api, entity: api.fetch_description(entity["id"]),
     ("band", "similar_artists"): lambda api, entity: api.fetch_similar_artists(entity["id"]),
+    # Resolved song entities key their track ID as "id"; "song_id" only exists
+    # on raw tracklist rows, which never reach a lazy section.
     ("song", "lyrics"): lambda api, entity: (
-        api.fetch_lyrics(entity["song_id"]) if entity.get("song_id") else None
+        api.fetch_lyrics(entity["id"]) if entity.get("id") else None
     ),
 }
 
 # ─── API factory ─────────────────────────────────────────────────────────────
 
 
+class MissingTolerantAPI:
+    """Wrap an entity API so a deleted page reads as an empty result.
+
+    ``NotFoundError`` is part of the library contract: it is the only way a
+    caller can distinguish an entry that was deleted from one that failed to
+    fetch, and the scraping pipeline relies on it to mark entries deleted
+    rather than retrying them forever.
+
+    The interactive frontends have no use for that distinction. Search indexes
+    lag deletions, so following a stale result is routine, and an uncaught
+    error there means a traceback in the CLI and an interaction that never gets
+    answered in the bot. Only the entity fetches are softened; everything else
+    is passed straight through, and an attribute the wrapped API does not have
+    still raises AttributeError rather than appearing to exist.
+    """
+
+    # Methods that fetch one entity page, and so can legitimately find nothing.
+    _TOLERATED = frozenset({"get", "get_random"})
+
+    def __init__(self, api):
+        self._api = api
+
+    def __getattr__(self, name):
+        attr = getattr(self._api, name)
+        if name not in self._TOLERATED or not callable(attr):
+            return attr
+
+        @functools.wraps(attr)
+        def tolerant(*args, **kwargs):
+            try:
+                return attr(*args, **kwargs)
+            except NotFoundError:
+                logger.info("Entry no longer exists on Metal Archives.")
+                return None
+
+        return tolerant
+
+
 def make_apis(client):
     """Create the {type: API} mapping used by both CLI and Discord navigators."""
     return {
-        "band": BandAPI(client),
-        "album": AlbumAPI(client),
-        "artist": ArtistAPI(client),
-        "song": SongAPI(client),
-        "label": LabelAPI(client),
+        "band": MissingTolerantAPI(BandAPI(client)),
+        "album": MissingTolerantAPI(AlbumAPI(client)),
+        "artist": MissingTolerantAPI(ArtistAPI(client)),
+        "song": MissingTolerantAPI(SongAPI(client)),
+        "label": MissingTolerantAPI(LabelAPI(client)),
     }
 
 
@@ -141,7 +184,13 @@ def build_filters(entity_type: str, **kwargs: str | None) -> dict[str, str]:
 
     label = kwargs.get("label")
     if label:
-        filters[API_PARAM_NAME.get((entity_type, "label_name"), "label")] = label
+        param = API_PARAM_NAME.get((entity_type, "label_name"))
+        if param:
+            filters[param] = label
+        else:
+            logger.warning(
+                f"Label filter not supported for {entity_type} search, ignoring"
+            )
 
     lyrics = kwargs.get("lyrics")
     if lyrics:

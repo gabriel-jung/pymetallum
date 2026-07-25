@@ -1,5 +1,6 @@
 """Shared HTML/text utility functions used by parsers and the API layer."""
 
+import copy
 import re
 from datetime import date, datetime
 from typing import Any
@@ -68,9 +69,7 @@ def extract_text_block(element: Tag) -> str | None:
     is whitespace-normalized, and excessive blank lines are collapsed. Returns
     None if the result is empty or trivially short.
     """
-    import copy as _copy
-
-    block = _copy.copy(element)
+    block = copy.copy(element)
     for a in block.find_all("a"):
         a.unwrap()
     for br in block.find_all("br"):
