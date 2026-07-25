@@ -35,9 +35,10 @@ Set your bot token and run:
 ```bash
 export DISCORD_TOKEN=your-bot-token
 metallum-discord
-# or with a .env file in the current directory
-metallum-discord
 ```
+
+Or put `DISCORD_TOKEN=your-bot-token` in a `.env` file in the current
+directory and run `metallum-discord` with no environment variable set.
 
 Use `--guild GUILD_ID` to sync slash commands instantly to a specific server
 (global sync can take up to an hour).

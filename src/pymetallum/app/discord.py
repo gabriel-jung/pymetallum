@@ -25,6 +25,7 @@ from discord_metadata import (
 
 from ..core.api import BandAPI, LabelAPI
 from ..core.client import MetalArchivesClient
+from ..core.countries import resolve_country
 from .common import (
     ENTITY_TYPES,
     LAZY_FETCHERS,
@@ -320,6 +321,24 @@ def _has_filters(*values) -> bool:
     return any(v is not None for v in values)
 
 
+async def _reject_bad_country(
+    interaction: discord.Interaction, country: str | None
+) -> bool:
+    """Report an unresolvable country and return True if the command should stop.
+
+    Without this the raw string reaches Metal Archives, which answers with an
+    empty result set, so a typo is indistinguishable from a genuine no-match.
+    """
+    if not country or resolve_country(country):
+        return False
+    await interaction.response.send_message(
+        f"Unknown country '{country}'. Use an ISO code (e.g. FR, NO, US) or a "
+        f"full country name. For regions or cities, use the location filter.",
+        ephemeral=True,
+    )
+    return True
+
+
 # ─── Slash commands (grouped under /metallum) ───────────────────────────────
 
 metallum = app_commands.Group(name="metallum", description="Browse Metal Archives")
@@ -349,6 +368,8 @@ async def cmd_band(
     label: str | None = None,
 ):
     if _has_filters(genre, country, year, status, themes, location, label):
+        if await _reject_bad_country(interaction, country):
+            return
         status_val = status.value if status else None
         filters = build_filters(
             "band", query=query, genre=genre, country=country, year=year,
@@ -378,6 +399,8 @@ async def cmd_album(
     label: str | None = None,
 ):
     if _has_filters(genre, country, year, location, label):
+        if await _reject_bad_country(interaction, country):
+            return
         filters = build_filters(
             "album", query=query, genre=genre, country=country,
             year=year, location=location, label=label,
@@ -471,6 +494,8 @@ async def cmd_recent(
         else ["created", "modified"]
     )
 
+    # Count only; the endpoint ignores page size, so a smaller request would
+    # not transfer any less.
     totals = {}
     for m in modes:
         _, totals[m] = await asyncio.to_thread(raw_api.fetch_recent_page, m, month)

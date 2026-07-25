@@ -6,16 +6,17 @@ All data is returned as plain dicts with a ``_type`` discriminator key.
 """
 
 import inspect
-from collections import OrderedDict
 from collections.abc import Callable
 from datetime import date
 from functools import cache
 from typing import Any, ClassVar
+from urllib.parse import parse_qs, quote, urlencode, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 from loguru import logger
 
 from .client import BASE_URL, MetalArchivesClient, NotFoundError
+from .countries import CODE_TO_COUNTRY
 from .parsers import (
     AlbumPageParser,
     ArtistPageParser,
@@ -31,6 +32,11 @@ from .utils import (
     parse_link,
     parse_rating,
 )
+
+# Bodies the AJAX fragment endpoints return, with HTTP 200, in place of content.
+# Without filtering they surface as the lyrics or description themselves.
+_LYRICS_PLACEHOLDERS = ("(loading", "(lyrics not available", "error")
+_DESCRIPTION_PLACEHOLDERS = ("invalid band id",)
 
 # Maps user-facing status labels to Metal Archives API status codes
 STATUS_MAP = {
@@ -65,7 +71,9 @@ class BaseAPI:
     Subclasses that support advanced search should define:
     - ``_ADVANCED_ENDPOINT``: the search URL path
     - ``_ADVANCED_DEFAULTS``: default parameters dict
-    - ``_ADVANCED_ROW_PARSER``: name of the method to parse result rows
+    - ``_ADVANCED_ROW_PARSER``: name of the method to parse result rows,
+      called as ``parser(row, columns)``
+    - ``_advanced_layout()``: the column layout for a given set of filters
 
     Args:
         client: A configured ``MetalArchivesClient`` instance that handles
@@ -79,10 +87,53 @@ class BaseAPI:
     # Subclasses with recent/archive listings set these:
     _ARCHIVE_ENDPOINT: str | None = None  # e.g. "/archives/ajax-band-list"
     _ARCHIVE_ROW_PARSER: str | None = None  # method name for parsing archive rows
+    _ARCHIVE_BLOCK = 200  # rows the archive endpoint returns per request
 
     def __init__(self, client: MetalArchivesClient):
         self._client = client
         self._base_url = client.base_url
+
+    # ─── HTTP helpers ────────────────────────────────────────────────────────
+    #
+    # Used for the supporting requests behind an entity: discography, images,
+    # roster tables, lyrics, listings and searches. A 404 there means the extra
+    # data does not exist, which is not a reason to fail the whole fetch.
+    #
+    # The entity page itself deliberately does NOT go through these. Its 404 is
+    # the only way a caller can tell "this entry was deleted" from "this fetch
+    # failed", and consumers rely on that: the scraping pipeline marks an entry
+    # deleted on NotFoundError and retries it on any other failure. Swallowing
+    # it there would silently turn deletions into permanent retries.
+    # Frontends that want the softer behaviour wrap the API instead; see
+    # MissingTolerantAPI in app/common.py.
+
+    def _get(
+        self, url: str, params: dict | None = None, crawl: bool = False
+    ) -> str | None:
+        """Fetch a page, returning None if it does not exist."""
+        try:
+            return self._client.get(url, params, crawl=crawl)
+        except NotFoundError:
+            logger.debug(f"404 for {url}")
+            return None
+
+    def _get_json(
+        self, url: str, params: dict | None = None, crawl: bool = False
+    ) -> dict | None:
+        """Fetch a JSON endpoint, returning None if it does not exist."""
+        try:
+            return self._client.get_json(url, params, crawl=crawl)
+        except NotFoundError:
+            logger.debug(f"404 for {url}")
+            return None
+
+    def _get_bytes(self, url: str, crawl: bool = False) -> bytes | None:
+        """Fetch binary content, returning None if it does not exist."""
+        try:
+            return self._client.get_bytes(url, crawl=crawl)
+        except NotFoundError:
+            logger.debug(f"404 for {url}")
+            return None
 
     def fetch_recent_filtered(
         self,
@@ -139,11 +190,17 @@ class BaseAPI:
 
         Requires ``_ARCHIVE_ENDPOINT`` and ``_ARCHIVE_ROW_PARSER`` on the subclass.
 
+        The endpoint serves fixed ``_ARCHIVE_BLOCK``-row blocks and ignores the
+        requested page size, so the window is assembled by
+        ``_fetch_row_window``. Any ``count`` is therefore honoured, but a whole
+        block is transferred regardless: asking for fewer rows saves no
+        bandwidth.
+
         Args:
             mode: ``"created"`` or ``"modified"``.
             month: Month in ``YYYY-MM`` format. Defaults to current month.
             start: Offset into results (for pagination).
-            count: Page size (server caps at 200).
+            count: Page size.
 
         Returns:
             Tuple of (list of item dicts, total matching records).
@@ -157,15 +214,23 @@ class BaseAPI:
 
         url = f"{self._base_url}{self._ARCHIVE_ENDPOINT}/selection/{month}/by/{mode}/json/1"
         date_key = "added_on" if mode == "created" else "modified_on"
-        params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": count}
-        data = self._client.get_json(url, params, crawl=True)
-        if not data:
-            return [], 0
-        rows = data.get("aaData", [])
-        total = data.get("iTotalRecords", 0)
+
+        def fetch_block(block_start: int) -> tuple[list, int]:
+            params = {
+                "sEcho": 0,
+                "iDisplayStart": block_start,
+                "iDisplayLength": self._ARCHIVE_BLOCK,
+            }
+            data = self._get_json(url, params, crawl=True)
+            if not data:
+                return [], 0
+            return data.get("aaData", []), data.get("iTotalRecords", 0)
+
+        rows, total = self._fetch_row_window(
+            fetch_block, start, count, self._ARCHIVE_BLOCK
+        )
         row_parser = getattr(self, self._ARCHIVE_ROW_PARSER)
-        results = [r for row in rows if (r := row_parser(row, date_key))]
-        return results, total
+        return [r for row in rows if (r := row_parser(row, date_key))], total
 
     def fetch_recently_created(
         self, month: str | None = None, batch_size: int = 200,
@@ -226,6 +291,61 @@ class BaseAPI:
             logger.success(f"Completed: {len(all_items)} {label}")
         return all_items
 
+    @staticmethod
+    def _fetch_row_window(
+        fetch_block: Callable[[int], tuple[list, int]],
+        start: int,
+        count: int,
+        block: int,
+    ) -> tuple[list, int]:
+        """Assemble the raw rows for ``[start, start + count)`` from server blocks.
+
+        The listing endpoints ignore ``iDisplayLength`` and floor
+        ``iDisplayStart`` to a multiple of their own fixed block size: asking
+        for rows 25-49 returns the whole block starting at 0. Left uncorrected,
+        a caller paging in steps of 25 gets the same rows every time.
+
+        So the containing block is requested, the window sliced out of it, and
+        a second block pulled when the window straddles a boundary. Slicing
+        happens on raw rows, before parsing, so rows the parser rejects do not
+        shift the window.
+
+        Args:
+            fetch_block: Callable taking a block-aligned offset and returning
+                ``(raw_rows, total_records)``.
+            start: First row wanted.
+            count: How many rows are wanted.
+            block: The endpoint's server-side block size.
+
+        Returns:
+            Tuple of (raw rows for the window, total matching records).
+        """
+        block_start = (start // block) * block
+        rows, total = fetch_block(block_start)
+        if not rows:
+            return [], total
+
+        if len(rows) != block and block_start + len(rows) < total:
+            logger.warning(
+                f"Expected {block} rows per block but got {len(rows)}; "
+                f"listing pagination may be misaligned."
+            )
+
+        offset = start - block_start
+        window = rows[offset : offset + count]
+        next_start = block_start + len(rows)
+        while len(window) < count and next_start < total:
+            # Bind the follow-up total separately: a failed block answers
+            # (etc, 0), and assigning that straight to `total` would report the
+            # listing as empty even though the window holds rows.
+            more, more_total = fetch_block(next_start)
+            if not more:
+                break
+            total = more_total
+            window.extend(more[: count - len(window)])
+            next_start += len(more)
+        return window, total
+
     def _fetch_and_parse(
         self, url: str, parser_class: Callable, **kwargs
     ) -> dict | None:
@@ -246,6 +366,10 @@ class BaseAPI:
 
         Returns:
             Parsed entity dict with ``_type`` key, or None on fetch failure.
+
+        Raises:
+            NotFoundError: If the page no longer exists, so callers can tell a
+                deleted entry from a failed request.
         """
         html = self._client.get(url)
         if not html:
@@ -279,7 +403,7 @@ class BaseAPI:
         Returns:
             List of parsed entity dicts, possibly empty.
         """
-        data = self._client.get_json(f"{self._base_url}{endpoint}", {"query": query})
+        data = self._get_json(f"{self._base_url}{endpoint}", {"query": query})
         if not data:
             return []
 
@@ -323,7 +447,7 @@ class BaseAPI:
         params.update(filters)
 
         url = f"{self._base_url}{endpoint}"
-        data = self._client.get_json(url, params)
+        data = self._get_json(url, params)
         if not data:
             return [], 0
 
@@ -352,19 +476,54 @@ class BaseAPI:
             NotImplementedError: If the subclass doesn't define the required
                 class attributes for advanced search.
         """
-        if not self._ADVANCED_ENDPOINT or self._ADVANCED_DEFAULTS is None:
+        if (
+            not self._ADVANCED_ENDPOINT
+            or self._ADVANCED_DEFAULTS is None
+            or not self._ADVANCED_ROW_PARSER
+        ):
             raise NotImplementedError(
                 f"{type(self).__name__} does not support advanced search."
             )
+        columns = self._advanced_layout(filters)
         row_parser = getattr(self, self._ADVANCED_ROW_PARSER)
         return self._generic_advanced_search(
             self._ADVANCED_ENDPOINT,
-            row_parser,
+            lambda row: row_parser(row, columns),
             self._ADVANCED_DEFAULTS,
             start=start,
             count=count,
             **filters,
         )
+
+    def _advanced_layout(self, filters: dict[str, Any]) -> list[str]:
+        """Return the field name of each result column for these filters.
+
+        The advanced endpoints build their result table out of the filters that
+        were actually supplied, so the column layout is not fixed: extra columns
+        appear for some filters, and one column can change meaning entirely.
+        Parsing by hardcoded index therefore mislabels data as soon as the
+        filter combination changes. Subclasses that support advanced search
+        override this to describe their own table.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not describe an advanced column layout."
+        )
+
+    @staticmethod
+    def _apply_layout(
+        result: dict, row: list[str], columns: list[str], skip: tuple[str, ...]
+    ) -> dict:
+        """Fill ``result`` from ``row`` according to ``columns``.
+
+        Cells are read as HTML: Metal Archives embeds sort keys as comments
+        (``1990 <!-- 1990-00-00 -->``), which leak into the value if the cell
+        is treated as plain text.
+        """
+        for index, field in enumerate(columns):
+            if field in skip or index >= len(row):
+                continue
+            result[field] = _html_text(row[index])
+        return result
 
     def fetch_lyrics(self, song_id: str) -> str | None:
         """Fetch song lyrics via the AJAX lyrics endpoint.
@@ -374,6 +533,11 @@ class BaseAPI:
         of HTML tags and validated: short strings, loading placeholders, and
         error messages are discarded.
 
+        The endpoint answers 200 with a sentinel body rather than 404 when a
+        track has no stored lyrics, so those bodies are filtered by content or
+        they would render as the lyrics themselves. ``(instrumental)`` is
+        deliberately kept: that one is real information about the track.
+
         Args:
             song_id: The numeric song ID (from a tracklist entry).
 
@@ -381,19 +545,17 @@ class BaseAPI:
             Plain-text lyrics, or None if unavailable or too short.
         """
         url = f"{self._base_url}/release/ajax-view-lyrics/id/{song_id}"
-        html = self._client.get(url)
+        html = self._get(url)
         if not html:
             return None
         soup = BeautifulSoup(html.strip(), "html.parser")
         text = soup.get_text().strip()
-        if (
-            text
-            and len(text) > 5
-            and not text.startswith("(loading")
-            and not text.startswith("Error")
-        ):
-            return text
-        return None
+        if not text or len(text) <= 5:
+            return None
+        if text.lower().startswith(_LYRICS_PLACEHOLDERS):
+            logger.debug(f"No lyrics stored for song {song_id}: {text[:40]!r}")
+            return None
+        return text
 
 
 class BandAPI(BaseAPI):
@@ -407,8 +569,14 @@ class BandAPI(BaseAPI):
 
     @staticmethod
     def url(band_id: str) -> str:
-        """Build a band page URL from an ID."""
-        return f"{BASE_URL}/bands//{band_id}"
+        """Build a band page URL from an ID.
+
+        Uses the ID route rather than the ``/bands//{id}`` slug form. With an
+        empty slug Metal Archives answers 200 and a placeholder band page for
+        an ID that no longer exists, so a deleted band parses as a real one and
+        callers can never tell it went away. The ID route 404s properly.
+        """
+        return f"{BASE_URL}/band/view/id/{band_id}"
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if len(row) < 3 or not (name_link := parse_link(row[0])):
@@ -438,7 +606,7 @@ class BandAPI(BaseAPI):
         )
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/bands"
-    _ADVANCED_ROW_PARSER = "_parse_search_row"
+    _ADVANCED_ROW_PARSER = "_parse_advanced_row"
     _ARCHIVE_ENDPOINT = "/archives/ajax-band-list"
     _ARCHIVE_ROW_PARSER = "_parse_archive_row"
     _ADVANCED_DEFAULTS: ClassVar[dict[str, str]] = {
@@ -453,6 +621,58 @@ class BandAPI(BaseAPI):
         "location": "",
         "bandLabelName": "",
     }
+
+    # Optional band columns, in the order the endpoint appends them.
+    _ADVANCED_EXTRAS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("location", "location"),
+        ("themes", "themes"),
+        ("bandLabelName", "label"),
+    )
+
+    def _advanced_layout(self, filters: dict[str, Any]) -> list[str]:
+        """Column layout for the advanced band table.
+
+        The third column reports the band's location rather than its country
+        once the search is already constrained to a single country, so reading
+        it as ``country`` would file a city under a country name.
+        """
+        columns = ["name", "genre", "location" if filters.get("country") else "country"]
+        for param, field in self._ADVANCED_EXTRAS:
+            if filters.get(param) and field not in columns:
+                columns.append(field)
+        return columns
+
+    def _parse_advanced_row(self, row: list[str], columns: list[str]) -> dict | None:
+        """Parse an advanced band search row against its column layout."""
+        if not row or not (name_link := parse_link(row[0])):
+            return None
+        url = name_link.get("href", "")
+        result = {
+            "_type": "band",
+            "name": normalize_text(name_link.text),
+            "url": url,
+            "id": extract_id_from_url(url),
+            "genre": "",
+            "country": "",
+        }
+        return self._apply_layout(result, row, columns, skip=("name",))
+
+    def advanced_search(
+        self, start: int = 0, count: int = 200, **filters: Any
+    ) -> tuple[list[dict], int]:
+        """Advanced band search, filling in the country the results share.
+
+        When filtering by country the endpoint drops that column (every hit
+        matches it), which would otherwise leave every result displaying an
+        unknown country.
+        """
+        results, total = super().advanced_search(start, count, **filters)
+        country = CODE_TO_COUNTRY.get(str(filters.get("country") or ""))
+        if country:
+            for result in results:
+                if not result.get("country"):
+                    result["country"] = country
+        return results, total
 
     def get_random(self, full: bool = False, **kwargs) -> dict | None:
         """Fetch a random band from Metal Archives.
@@ -472,8 +692,10 @@ class BandAPI(BaseAPI):
         if not result:
             return None
         html, final_url = result
+        valid = _parser_kwargs(BandPageParser)
+        filtered = {k: v for k, v in kwargs.items() if k in valid}
         soup = BeautifulSoup(html, "html.parser")
-        band = BandPageParser(soup, final_url, **kwargs).parse()
+        band = BandPageParser(soup, final_url, **filtered).parse()
         return self._enrich_band(band, full)
 
     def get(self, band_url: str, full: bool = False, **kwargs) -> dict | None:
@@ -512,10 +734,7 @@ class BandAPI(BaseAPI):
                 band["similar_artists"] = self.fetch_similar_artists(band_id)
 
         if band.get("logo_url"):
-            try:
-                band["_logo_data"] = self._client.get_bytes(band["logo_url"])
-            except NotFoundError:
-                band["_logo_data"] = None
+            band["_logo_data"] = self._get_bytes(band["logo_url"])
 
         return band
 
@@ -535,7 +754,7 @@ class BandAPI(BaseAPI):
             (under 20 characters, which usually means placeholder content).
         """
         url = f"{self._base_url}/band/read-more/id/{band_id}"
-        html = self._client.get(url)
+        html = self._get(url)
         if not html:
             return None
 
@@ -543,6 +762,9 @@ class BandAPI(BaseAPI):
         text = extract_text_block(soup)
         if text:
             text = text.removesuffix("Read more").strip()
+        if text and text.lower().startswith(_DESCRIPTION_PLACEHOLDERS):
+            logger.debug(f"No description for band {band_id}: {text[:40]!r}")
+            return None
         return text or None
 
     def _fetch_discography(self, band_id: str, band_name: str | None = None) -> list[dict]:
@@ -564,10 +786,7 @@ class BandAPI(BaseAPI):
             ``review_summary``.
         """
         url = f"{self._base_url}/band/discography/id/{band_id}/tab/all"
-        try:
-            html = self._client.get(url)
-        except NotFoundError:
-            return []
+        html = self._get(url)
         if not html:
             return []
 
@@ -617,7 +836,7 @@ class BandAPI(BaseAPI):
             ``country``, ``genre``, and ``score`` (int percentage or None).
         """
         url = f"{self._base_url}/band/ajax-recommendations/id/{band_id}"
-        html = self._client.get(url)
+        html = self._get(url)
         if not html:
             return []
 
@@ -666,7 +885,7 @@ class BandAPI(BaseAPI):
 
         def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
-            data = self._client.get_json(url, params, crawl=True)
+            data = self._get_json(url, params, crawl=True)
             if not data:
                 return [], 0
             rows = data.get("aaData", [])
@@ -756,6 +975,8 @@ class AlbumAPI(BaseAPI):
     by default, and downloads the cover art in-memory for terminal display.
     """
 
+    _UPCOMING_BLOCK = 100  # rows the upcoming endpoint returns per request
+
     @staticmethod
     def url(album_id: str) -> str:
         """Build an album page URL from an ID."""
@@ -811,24 +1032,50 @@ class AlbumAPI(BaseAPI):
         "genre": "",
     }
 
-    def _parse_advanced_row(self, row: list[str]) -> dict | None:
-        """Parse a row from the advanced album search (5 columns)."""
-        if len(row) < 3:
+    # Optional album columns, in the order the endpoint appends them.
+    _ADVANCED_EXTRAS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("genre", "genre"),
+        ("location", "location"),
+        ("releaseLabelName", "label"),
+        ("releaseYearFrom", "release_date"),
+    )
+
+    def _advanced_layout(self, filters: dict[str, Any]) -> list[str]:
+        """Column layout for the advanced album table.
+
+        Only the band, title and type columns are always present; genre,
+        location, label and release date each appear only when the matching
+        filter was supplied. Reading the date from a fixed index puts it in
+        ``genre`` for a year-only search.
+        """
+        columns = ["band", "name", "album_type"]
+        for param, field in self._ADVANCED_EXTRAS:
+            if filters.get(param) or (
+                field == "release_date" and filters.get("releaseYearTo")
+            ):
+                columns.append(field)
+        return columns
+
+    def _parse_advanced_row(self, row: list[str], columns: list[str]) -> dict | None:
+        """Parse an advanced album search row against its column layout."""
+        if len(row) < 2:
             return None
         band_link = parse_link(row[0])
         album_link = parse_link(row[1])
         if not band_link or not album_link:
             return None
-        return {
+        url = album_link.get("href", "")
+        result = {
             "_type": "album",
             "name": normalize_text(album_link.text),
             "band": normalize_text(band_link.text),
-            "url": album_link.get("href", ""),
-            "id": extract_id_from_url(album_link.get("href", "")),
-            "album_type": normalize_text(row[2]) if len(row) > 2 else "",
-            "genre": normalize_text(row[3]) if len(row) > 3 else "",
-            "release_date": normalize_text(row[4]) if len(row) > 4 else "",
+            "url": url,
+            "id": extract_id_from_url(url),
+            "album_type": "",
+            "genre": "",
+            "release_date": "",
         }
+        return self._apply_layout(result, row, columns, skip=("band", "name"))
 
     def get(self, album_url: str, **kwargs) -> dict | None:
         """Fetch and parse an album's detail page.
@@ -844,14 +1091,11 @@ class AlbumAPI(BaseAPI):
             Album dict with tracklist, lineup, and cover data, or None on
             fetch failure.
         """
-        album = self._fetch_and_parse(
-            album_url, AlbumPageParser, with_tracklist=True, with_lineup=True, **kwargs
-        )
+        kwargs.setdefault("with_tracklist", True)
+        kwargs.setdefault("with_lineup", True)
+        album = self._fetch_and_parse(album_url, AlbumPageParser, **kwargs)
         if album and album.get("cover_url"):
-            try:
-                album["_cover_data"] = self._client.get_bytes(album["cover_url"])
-            except NotFoundError:
-                album["_cover_data"] = None
+            album["_cover_data"] = self._get_bytes(album["cover_url"])
         return album
 
     def fetch_upcoming_page(
@@ -864,9 +1108,13 @@ class AlbumAPI(BaseAPI):
     ) -> tuple[list[dict[str, Any]], int]:
         """Fetch a single page of upcoming album releases.
 
+        As with the archive listings, the endpoint serves fixed
+        ``_UPCOMING_BLOCK``-row blocks and ignores the requested page size, so
+        the window is assembled by ``_fetch_row_window``.
+
         Args:
             start: Offset into results (for pagination).
-            count: Page size (server caps at 100).
+            count: Page size.
             from_date: Start date in ``YYYY-MM-DD`` format (default: today).
             to_date: End date in ``YYYY-MM-DD`` format (default: open-ended).
             include_versions: Whether to include re-releases/versions.
@@ -881,19 +1129,22 @@ class AlbumAPI(BaseAPI):
         if to_date:
             extra_params["toDate"] = to_date
 
-        params = {
-            "sEcho": 0,
-            "iDisplayStart": start,
-            "iDisplayLength": count,
-            **extra_params,
-        }
-        data = self._client.get_json(url, params, crawl=True)
-        if not data:
-            return [], 0
-        rows = data.get("aaData", [])
-        total = data.get("iTotalRecords", 0)
-        results = [r for row in rows if (r := self._parse_upcoming_row(row))]
-        return results, total
+        def fetch_block(block_start: int) -> tuple[list, int]:
+            params = {
+                "sEcho": 0,
+                "iDisplayStart": block_start,
+                "iDisplayLength": self._UPCOMING_BLOCK,
+                **extra_params,
+            }
+            data = self._get_json(url, params, crawl=True)
+            if not data:
+                return [], 0
+            return data.get("aaData", []), data.get("iTotalRecords", 0)
+
+        rows, total = self._fetch_row_window(
+            fetch_block, start, count, self._UPCOMING_BLOCK
+        )
+        return [r for row in rows if (r := self._parse_upcoming_row(row))], total
 
     def fetch_upcoming(
         self,
@@ -969,10 +1220,12 @@ class ArtistAPI(BaseAPI):
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if not row or not (name_link := parse_link(row[0])):
             return None
+        artist_url = name_link.get("href", "")
         result = {
             "_type": "artist",
             "name": normalize_text(name_link.text),
-            "url": name_link.get("href", ""),
+            "url": artist_url,
+            "id": extract_id_from_url(artist_url),
             "real_name": (row[1].strip() or None) if len(row) > 1 else None,
             "country": _html_text(row[2]) if len(row) > 2 else None,
         }
@@ -1012,10 +1265,7 @@ class ArtistAPI(BaseAPI):
         """
         artist = self._fetch_and_parse(artist_url, ArtistPageParser, **kwargs)
         if artist and artist.get("photo_url"):
-            try:
-                artist["_photo_data"] = self._client.get_bytes(artist["photo_url"])
-            except NotFoundError:
-                artist["_photo_data"] = None
+            artist["_photo_data"] = self._get_bytes(artist["photo_url"])
         return artist
 
 
@@ -1078,10 +1328,7 @@ class LabelAPI(BaseAPI):
             List of parsed rows, where each row is a list of cell values.
         """
         url = f"{self._base_url}/label/{endpoint}/nbrPerPage/500/id/{label_id}"
-        try:
-            data = self._client.get_json(url)
-        except NotFoundError:
-            return []
+        data = self._get_json(url)
         if not data:
             return []
 
@@ -1134,7 +1381,7 @@ class LabelAPI(BaseAPI):
 
         def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
-            data = self._client.get_json(url, params, crawl=True)
+            data = self._get_json(url, params, crawl=True)
             if not data:
                 return [], 0
             rows = data.get("aaData", [])
@@ -1209,6 +1456,9 @@ class LabelAPI(BaseAPI):
         Returns:
             Label dict with contact info, rosters, and releases, or None on
             fetch failure.
+
+        Raises:
+            NotFoundError: If the label page no longer exists.
         """
         html = self._client.get(label_url)
         if not html:
@@ -1240,16 +1490,41 @@ class SongAPI(BaseAPI):
     pointing to their parent album URL, and ``get()`` fetches that album
     page and extracts the specific song from the tracklist.
 
-    A search result cache (``_last_search_results``) maps album URLs to
-    song names, allowing ``get()`` to auto-detect which song to extract
-    without the caller needing to pass the song name explicitly.
+    Search results carry no song IDs (Metal Archives does not expose them
+    there), so each result's ``url`` is the album URL tagged with a
+    ``?song=<name>`` parameter naming the track. ``get()`` reads that tag back
+    to know which row of the tracklist to extract. Making the reference
+    self-describing means results stay resolvable no matter which call
+    produced them, and two songs from the same album cannot shadow each other.
+    Tracklist entries, which do have IDs, use a ``#song_id`` fragment instead;
+    both forms are accepted.
     """
 
-    _SEARCH_CACHE_MAX = 512
+    _SONG_QUERY_KEY = "song"
 
-    def __init__(self, client: MetalArchivesClient):
-        super().__init__(client)
-        self._last_search_results: OrderedDict[str, str] = OrderedDict()
+    @classmethod
+    def _tag_url(cls, album_url: str, song_name: str) -> str:
+        """Tag an album URL with the song name it should resolve to."""
+        if not album_url or not song_name:
+            return album_url
+        separator = "&" if urlsplit(album_url).query else "?"
+        return f"{album_url}{separator}{cls._SONG_QUERY_KEY}={quote(song_name)}"
+
+    @classmethod
+    def _split_ref(cls, song_url: str) -> tuple[str, str | None, str | None]:
+        """Split a song reference into ``(album_url, song_id, song_name)``.
+
+        Accepts a plain album URL, one tagged with ``?song=``, one carrying a
+        ``#song_id`` fragment, or both.
+        """
+        base, _, fragment = song_url.partition("#")
+        parts = urlsplit(base)
+        params = parse_qs(parts.query)
+        names = params.pop(cls._SONG_QUERY_KEY, [])
+        album_url = urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(params, doseq=True), "")
+        )
+        return album_url, fragment or None, names[0] if names else None
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
         if len(row) < 4:
@@ -1260,10 +1535,11 @@ class SongAPI(BaseAPI):
         if not band_link or not album_link:
             return None
 
+        name = normalize_text(row[3])
         return {
             "_type": "song",
-            "name": normalize_text(row[3]),
-            "url": album_link.get("href", ""),
+            "name": name,
+            "url": self._tag_url(album_link.get("href", ""), name),
             "id": None,
             "band": normalize_text(band_link.text),
             "album": normalize_text(album_link.text),
@@ -1271,7 +1547,7 @@ class SongAPI(BaseAPI):
         }
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/songs"
-    _ADVANCED_ROW_PARSER = "_parse_search_row"
+    _ADVANCED_ROW_PARSER = "_parse_advanced_row"
     _ADVANCED_DEFAULTS: ClassVar[dict[str, str]] = {
         "songTitle": "",
         "bandName": "",
@@ -1280,48 +1556,51 @@ class SongAPI(BaseAPI):
         "genre": "",
     }
 
+    def _advanced_layout(self, filters: dict[str, Any]) -> list[str]:
+        """Column layout for the advanced song table.
+
+        Extra filters append columns after the title, but the four the parser
+        reads (band, release, type, title) keep their positions, so the layout
+        is only used to satisfy the shared calling convention.
+        """
+        return ["band", "album", "album_type", "name"]
+
+    def _parse_advanced_row(self, row: list[str], columns: list[str]) -> dict | None:
+        """Parse an advanced song search row (same leading columns as search)."""
+        return self._parse_search_row(row)
+
     def search(self, query: str, exact_match: bool = True) -> list[dict]:
         """Search songs by name via ``/search/ajax-song-search/``.
-
-        Results are cached internally so that a subsequent ``get()`` call can
-        auto-detect the target song name from the album URL. This avoids
-        requiring the caller to pass ``song_name`` explicitly.
 
         Args:
             query: Song name to search for.
             exact_match: If True, only return songs whose name matches exactly.
 
         Returns:
-            List of song dicts with keys: ``_type``, ``name``, ``url`` (album
-            URL), ``id`` (None until ``get()`` resolves it), ``band``,
-            ``album``, ``album_type``.
+            List of song dicts with keys: ``_type``, ``name``, ``url`` (the
+            album URL tagged with ``?song=``), ``id`` (None until ``get()``
+            resolves it), ``band``, ``album``, ``album_type``.
         """
-        results = self._generic_search(
+        return self._generic_search(
             "/search/ajax-song-search/", query, self._parse_search_row, exact_match
         )
-
-        for song in results:
-            self._last_search_results[song["url"]] = song["name"]
-            self._last_search_results.move_to_end(song["url"])
-        while len(self._last_search_results) > self._SEARCH_CACHE_MAX:
-            self._last_search_results.popitem(last=False)
-
-        return results
 
     def get(self, song_url: str, **kwargs) -> dict | None:
         """Fetch a song's details by parsing its parent album page.
 
         Since songs don't have dedicated pages, this fetches the album page
         and uses ``SongPageParser`` to locate the specific song in the
-        tracklist. The target song is identified either from the ``song_name``
-        kwarg or from the internal cache populated by ``search()``.
+        tracklist. The target song is identified by the ``#song_id`` fragment
+        if present, otherwise by name, taken from the ``song_name`` kwarg or
+        from the ``?song=`` tag that ``search()`` puts on the URL.
 
-        Once the song is found, its numeric ID and a fragment URL
+        Once the song is found, its numeric ID and a clean fragment URL
         (``album_url#song_id``) are set. Lyrics are fetched by default
         unless ``with_lyrics=False`` is passed.
 
         Args:
-            song_url: Album URL, optionally with a ``#song_id`` fragment.
+            song_url: Album URL, optionally tagged with ``?song=<name>``
+                and/or a ``#song_id`` fragment.
             **kwargs: Optional ``song_name`` (str) to specify which song to
                 extract, and ``with_lyrics`` (bool, default True) to control
                 lyrics fetching.
@@ -1331,19 +1610,18 @@ class SongAPI(BaseAPI):
             lyrics. None if the page could not be fetched or the song was
             not found in the tracklist.
         """
-        album_url = song_url.split("#")[0] if "#" in song_url else song_url
+        album_url, song_id, tagged_name = self._split_ref(song_url)
         html = self._client.get(album_url)
         if not html:
             return None
 
-        target_song_name = kwargs.get("song_name")
-        if not target_song_name and song_url in self._last_search_results:
-            target_song_name = self._last_search_results[song_url]
-            logger.debug(f"Auto-detected target song name: {target_song_name}")
+        target_song_name = kwargs.get("song_name") or tagged_name
+        if target_song_name:
+            logger.debug(f"Resolving song by name: {target_song_name}")
 
         parser = SongPageParser(
             BeautifulSoup(html, "html.parser"),
-            song_url,
+            f"{album_url}#{song_id}" if song_id else album_url,
             target_song_name=target_song_name,
         )
 
