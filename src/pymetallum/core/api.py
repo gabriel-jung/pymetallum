@@ -674,7 +674,9 @@ class BandAPI(BaseAPI):
                     result["country"] = country
         return results, total
 
-    def get_random(self, full: bool = False, **kwargs) -> dict | None:
+    def get_random(
+        self, full: bool = False, with_media: bool = True, **kwargs
+    ) -> dict | None:
         """Fetch a random band from Metal Archives.
 
         Uses the ``/band/random`` endpoint which redirects to a random band
@@ -682,6 +684,7 @@ class BandAPI(BaseAPI):
 
         Args:
             full: If True, eagerly fetch description and similar artists.
+            with_media: If False, skip downloading the logo bytes.
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
@@ -696,13 +699,20 @@ class BandAPI(BaseAPI):
         filtered = {k: v for k, v in kwargs.items() if k in valid}
         soup = BeautifulSoup(html, "html.parser")
         band = BandPageParser(soup, final_url, **filtered).parse()
-        return self._enrich_band(band, full)
+        return self._enrich_band(band, full, with_media)
 
-    def get(self, band_url: str, full: bool = False, **kwargs) -> dict | None:
+    def get(
+        self,
+        band_url: str,
+        full: bool = False,
+        with_media: bool = True,
+        **kwargs,
+    ) -> dict | None:
         """Fetch and parse a band's detail page.
 
         Always fetches the full discography (one extra AJAX request). The band
-        photo is also downloaded in-memory for terminal display.
+        logo is also downloaded in-memory for terminal display, unless
+        ``with_media`` is False.
 
         When ``full`` is True, two additional requests are made to fetch the
         band's text description and list of similar artists. In the interactive
@@ -711,6 +721,10 @@ class BandAPI(BaseAPI):
         Args:
             band_url: Full URL of the band page.
             full: If True, eagerly fetch description and similar artists.
+            with_media: If False, skip downloading the logo bytes. ``logo_url``
+                is still returned, only ``_logo_data`` is omitted. Bulk callers
+                that do not render images should pass False: the fetch costs a
+                full rate-limited request per band.
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
@@ -718,9 +732,11 @@ class BandAPI(BaseAPI):
             and similar artists. None if the page could not be fetched.
         """
         band = self._fetch_and_parse(band_url, BandPageParser, **kwargs)
-        return self._enrich_band(band, full)
+        return self._enrich_band(band, full, with_media)
 
-    def _enrich_band(self, band: dict | None, full: bool = False) -> dict | None:
+    def _enrich_band(
+        self, band: dict | None, full: bool = False, with_media: bool = True
+    ) -> dict | None:
         """Add discography, logo, and optional extras to a parsed band dict."""
         if not band:
             return None
@@ -733,7 +749,7 @@ class BandAPI(BaseAPI):
                 band["description"] = self.fetch_description(band_id)
                 band["similar_artists"] = self.fetch_similar_artists(band_id)
 
-        if band.get("logo_url"):
+        if with_media and band.get("logo_url"):
             band["_logo_data"] = self._get_bytes(band["logo_url"])
 
         return band
@@ -1077,14 +1093,19 @@ class AlbumAPI(BaseAPI):
         }
         return self._apply_layout(result, row, columns, skip=("band", "name"))
 
-    def get(self, album_url: str, **kwargs) -> dict | None:
+    def get(self, album_url: str, with_media: bool = True, **kwargs) -> dict | None:
         """Fetch and parse an album's detail page.
 
         Parses the full album page including tracklist and lineup. The album
-        cover art is downloaded in-memory for terminal display.
+        cover art is downloaded in-memory for terminal display, unless
+        ``with_media`` is False.
 
         Args:
             album_url: Full URL of the album page.
+            with_media: If False, skip downloading the cover bytes.
+                ``cover_url`` is still returned, only ``_cover_data`` is
+                omitted. Bulk callers that do not render images should pass
+                False: the fetch costs a full rate-limited request per album.
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
@@ -1094,7 +1115,7 @@ class AlbumAPI(BaseAPI):
         kwargs.setdefault("with_tracklist", True)
         kwargs.setdefault("with_lineup", True)
         album = self._fetch_and_parse(album_url, AlbumPageParser, **kwargs)
-        if album and album.get("cover_url"):
+        if album and with_media and album.get("cover_url"):
             album["_cover_data"] = self._get_bytes(album["cover_url"])
         return album
 
@@ -1248,15 +1269,20 @@ class ArtistAPI(BaseAPI):
             "/search/ajax-artist-search/", query, self._parse_search_row, exact_match
         )
 
-    def get(self, artist_url: str, **kwargs) -> dict | None:
+    def get(self, artist_url: str, with_media: bool = True, **kwargs) -> dict | None:
         """Fetch and parse an artist's detail page.
 
         Parses the full artist page including biography, trivia, and a
         complete overview of all band memberships (active and past). The
-        artist photo is downloaded in-memory for terminal display.
+        artist photo is downloaded in-memory for terminal display, unless
+        ``with_media`` is False.
 
         Args:
             artist_url: Full URL of the artist page.
+            with_media: If False, skip downloading the photo bytes.
+                ``photo_url`` is still returned, only ``_photo_data`` is
+                omitted. Bulk callers that do not render images should pass
+                False: the fetch costs a full rate-limited request per artist.
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
@@ -1264,7 +1290,7 @@ class ArtistAPI(BaseAPI):
             failure.
         """
         artist = self._fetch_and_parse(artist_url, ArtistPageParser, **kwargs)
-        if artist and artist.get("photo_url"):
+        if artist and with_media and artist.get("photo_url"):
             artist["_photo_data"] = self._get_bytes(artist["photo_url"])
         return artist
 
