@@ -1338,6 +1338,8 @@ class LabelAPI(BaseAPI):
             "/search/ajax-label-search/", query, self._parse_search_row, exact_match
         )
 
+    _LABEL_TABLE_PAGE = 500
+
     def _fetch_ajax_table(self, endpoint: str, label_id: str) -> list[list]:
         """Fetch and parse a paginated AJAX table for a label.
 
@@ -1346,6 +1348,11 @@ class LabelAPI(BaseAPI):
         Each cell is parsed from HTML: cells containing links are returned as
         dicts with ``text`` and ``links`` keys, plain text cells as strings.
 
+        The endpoint caps a response at its page size no matter what
+        ``nbrPerPage`` asks for, so every page has to be walked. Only requesting
+        the first silently truncated large catalogues: Nuclear Blast reports
+        6,372 releases and returned 500 of them.
+
         Args:
             endpoint: The AJAX endpoint name (e.g. ``ajax-bands``).
             label_id: The numeric label ID.
@@ -1353,13 +1360,27 @@ class LabelAPI(BaseAPI):
         Returns:
             List of parsed rows, where each row is a list of cell values.
         """
-        url = f"{self._base_url}/label/{endpoint}/nbrPerPage/500/id/{label_id}"
-        data = self._get_json(url)
-        if not data:
-            return []
+        page = self._LABEL_TABLE_PAGE
+        url = f"{self._base_url}/label/{endpoint}/nbrPerPage/{page}/id/{label_id}"
+
+        rows: list = []
+        start = 0
+        while True:
+            data = self._get_json(
+                url, {"iDisplayStart": start, "iDisplayLength": page}
+            )
+            if not data:
+                break
+            batch = data.get("aaData", [])
+            if not batch:
+                break
+            rows.extend(batch)
+            start += len(batch)
+            if start >= data.get("iTotalRecords", 0):
+                break
 
         parsed_rows = []
-        for row_data in data.get("aaData", []):
+        for row_data in rows:
             parsed_row = []
             for cell in row_data:
                 if isinstance(cell, str):
