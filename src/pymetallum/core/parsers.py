@@ -79,9 +79,7 @@ class BandPageParser(BasePageParser):
                     label_link = dd.find("a")
                     if label_link:
                         band["label_url"] = label_link.get("href", "")
-                        band["label_id"] = extract_id_from_url(
-                            label_link.get("href", "")
-                        )
+                        band["label_id"] = extract_id_from_url(label_link.get("href", ""))
                 break
 
     def _parse_members(self) -> dict[str, list]:
@@ -211,19 +209,13 @@ class AlbumPageParser(BasePageParser):
             if key == "Label":
                 label_tags = dd.find_all("a")
                 if label_tags:
-                    album_info["label"] = " / ".join(
-                        tag.text.strip() for tag in label_tags
-                    )
-                    album_info["label_id"] = [
-                        extract_id_from_url(tag.get("href", "")) for tag in label_tags
-                    ]
+                    album_info["label"] = " / ".join(tag.text.strip() for tag in label_tags)
+                    album_info["label_id"] = [extract_id_from_url(tag.get("href", "")) for tag in label_tags]
                 else:
                     album_info["label"] = dd.get_text(strip=True)
                     album_info["label_id"] = []
             else:
-                album_info[key.lower().replace(" ", "_")] = normalize_text(
-                    dd.get_text()
-                )
+                album_info[key.lower().replace(" ", "_")] = normalize_text(dd.get_text())
 
         return album_info
 
@@ -284,9 +276,7 @@ class AlbumPageParser(BasePageParser):
             anchor = cells[0].find("a", class_="anchor")
             song_id = anchor.get("name") if anchor else None
 
-            has_lyrics = bool(
-                cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton"))
-            )
+            has_lyrics = bool(cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton")))
             note = ""
             em_tag = cells[3].find("em")
             if em_tag:
@@ -434,9 +424,7 @@ class ArtistPageParser(BasePageParser):
                 all_bands.extend(bands)
         return all_bands
 
-    def _extract_bands_from_tab(
-        self, tab_soup: BeautifulSoup, membership_type: str
-    ) -> list[dict[str, Any]]:
+    def _extract_bands_from_tab(self, tab_soup: BeautifulSoup, membership_type: str) -> list[dict[str, Any]]:
         """Parse band entries from a single membership tab."""
         bands = []
         for band_div in tab_soup.select(".member_in_band"):
@@ -560,10 +548,7 @@ class SongPageParser(BasePageParser):
                 "duration": safe_get_text(cells[2]),
                 "track_number": safe_get_text(cells[0]).rstrip("."),
                 "has_lyrics": bool(
-                    len(cells) > 3
-                    and cells[3].find(
-                        "a", id=lambda x: x and x.startswith("lyricsButton")
-                    )
+                    len(cells) > 3 and cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton"))
                 ),
                 "song_id": track_id,
             }
@@ -573,8 +558,7 @@ class SongPageParser(BasePageParser):
                 return track
 
             if self.target_song_name and (
-                track["name"].lower().strip()
-                == self.target_song_name.lower().strip()
+                track["name"].lower().strip() == self.target_song_name.lower().strip()
             ):
                 self.song_id = track_id
                 logger.debug(f"Matched by name: '{track['name']}'")
@@ -664,24 +648,16 @@ class LabelPageParser(BasePageParser):
                     label["address"] = dd.get_text(separator=", ").strip()
                 case "country":
                     country_link = dd.find("a")
-                    label["country"] = (
-                        safe_get_text(country_link)
-                        if country_link
-                        else safe_get_text(dd)
-                    )
+                    label["country"] = safe_get_text(country_link) if country_link else safe_get_text(dd)
                 case "phone number":
                     label["phone"] = safe_get_text(dd)
                 case "status":
                     status_span = dd.find("span")
-                    label["status"] = (
-                        safe_get_text(status_span) if status_span else safe_get_text(dd)
-                    )
+                    label["status"] = safe_get_text(status_span) if status_span else safe_get_text(dd)
                 case s if s.startswith("styles") or s.startswith("specialties"):
                     styles_text = safe_get_text(dd)
                     if styles_text:
-                        label["styles"] = [
-                            s.strip() for s in styles_text.split(",") if s.strip()
-                        ]
+                        label["styles"] = [s.strip() for s in styles_text.split(",") if s.strip()]
                 case s if s.startswith("founding date"):
                     label["founding_date"] = safe_get_text(dd)
                 case "online shopping":

@@ -309,9 +309,7 @@ async def _advanced_search_and_navigate(
     await interaction.response.defer()
 
     raw_api = bot.navigator.apis[entity_type].raw
-    results, _total = await asyncio.to_thread(
-        raw_api.advanced_search, start=0, count=25, **filters
-    )
+    results, _total = await asyncio.to_thread(raw_api.advanced_search, start=0, count=25, **filters)
 
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
     await bot.navigator.navigate_results(interaction, results, title=filter_desc)
@@ -321,9 +319,7 @@ def _has_filters(*values) -> bool:
     return any(v is not None for v in values)
 
 
-async def _reject_bad_country(
-    interaction: discord.Interaction, country: str | None
-) -> bool:
+async def _reject_bad_country(interaction: discord.Interaction, country: str | None) -> bool:
     """Report an unresolvable country and return True if the command should stop.
 
     Without this the raw string reaches Metal Archives, which answers with an
@@ -372,8 +368,15 @@ async def cmd_band(
             return
         status_val = status.value if status else None
         filters = build_filters(
-            "band", query=query, genre=genre, country=country, year=year,
-            status=status_val, themes=themes, location=location, label=label,
+            "band",
+            query=query,
+            genre=genre,
+            country=country,
+            year=year,
+            status=status_val,
+            themes=themes,
+            location=location,
+            label=label,
         )
         await _advanced_search_and_navigate(interaction, "band", filters)
     else:
@@ -402,8 +405,13 @@ async def cmd_album(
         if await _reject_bad_country(interaction, country):
             return
         filters = build_filters(
-            "album", query=query, genre=genre, country=country,
-            year=year, location=location, label=label,
+            "album",
+            query=query,
+            genre=genre,
+            country=country,
+            year=year,
+            location=location,
+            label=label,
         )
         await _advanced_search_and_navigate(interaction, "album", filters)
     else:
@@ -489,8 +497,10 @@ async def cmd_recent(
     raw_api = bot.navigator.apis[entity_type].raw
 
     modes = (
-        ["created"] if mode_val == "created"
-        else ["modified"] if mode_val == "modified"
+        ["created"]
+        if mode_val == "created"
+        else ["modified"]
+        if mode_val == "modified"
         else ["created", "modified"]
     )
 

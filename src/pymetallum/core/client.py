@@ -53,9 +53,7 @@ class MetalArchivesClient:
         self._session = curl_requests.Session(impersonate="chrome")
         logger.info("HTTP client initialized.")
 
-    def get(
-        self, url: str, params: dict | None = None, crawl: bool = False
-    ) -> str | None:
+    def get(self, url: str, params: dict | None = None, crawl: bool = False) -> str | None:
         """Make a GET request and return the response body as text.
 
         Args:
@@ -142,9 +140,7 @@ class MetalArchivesClient:
         with self._lock:
             remaining = self._blocked_until - time.time()
             if remaining > 0:
-                logger.warning(
-                    f"Skipping {url}: challenge cooldown active ({remaining:.0f}s left)"
-                )
+                logger.warning(f"Skipping {url}: challenge cooldown active ({remaining:.0f}s left)")
                 return None
 
             self._enforce_rate_limit(crawl=crawl)
@@ -173,9 +169,7 @@ class MetalArchivesClient:
                         )
                         return None
                     if response.status_code >= 500 and attempt == 0:
-                        logger.warning(
-                            f"{response.status_code} for {url}, retrying in 3s"
-                        )
+                        logger.warning(f"{response.status_code} for {url}, retrying in 3s")
                         time.sleep(3)
                         continue
                     response.raise_for_status()
@@ -206,9 +200,7 @@ class MetalArchivesClient:
             logger.warning(f"Warmup after 403 failed: {warmup_err}")
         self._last_request_time = time.time()
 
-    def get_json(
-        self, url: str, params: dict | None = None, crawl: bool = False
-    ) -> dict | None:
+    def get_json(self, url: str, params: dict | None = None, crawl: bool = False) -> dict | None:
         """Make a GET request and parse the response as JSON.
 
         Metal Archives sometimes wraps JSON responses in HTML (inside a
@@ -236,9 +228,7 @@ class MetalArchivesClient:
             logger.error(f"Failed to parse JSON from {url}: {e}")
             return None
 
-    def download_image(
-        self, url: str, output_dir: str = "./images/"
-    ) -> str | None:
+    def download_image(self, url: str, output_dir: str = "./images/") -> str | None:
         """Download an image to a local file.
 
         The output path mirrors the remote path structure under ``output_dir``.
@@ -262,9 +252,7 @@ class MetalArchivesClient:
             return None
 
         try:
-            clean_path = url.split("?")[0].replace(
-                self.base_url + "/images/", ""
-            )
+            clean_path = url.split("?")[0].replace(self.base_url + "/images/", "")
             root = Path(output_dir).resolve()
             output_path = (root / clean_path).resolve()
             if output_path == root or not output_path.is_relative_to(root):

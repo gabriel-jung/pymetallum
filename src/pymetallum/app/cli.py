@@ -103,7 +103,8 @@ band_def = EntityDef(
     header_image_key="_logo_data",
     sections=[
         SectionDef(
-            "discography", navigable=True,
+            "discography",
+            navigable=True,
             columns=[
                 TableColumn("Year", "release_date", style="dim", width=6),
                 TableColumn("Title", "name", style="bold"),
@@ -114,7 +115,9 @@ band_def = EntityDef(
         SectionDef("members", navigable=True, columns=_MEMBER_COLUMNS),
         SectionDef("description", lazy=True),
         SectionDef(
-            "similar_artists", navigable=True, lazy=True,
+            "similar_artists",
+            navigable=True,
+            lazy=True,
             columns=[
                 TableColumn("Band", "name", style="bold"),
                 TableColumn("Country", "country"),
@@ -153,19 +156,25 @@ album_def = EntityDef(
     header_image_key="_cover_data",
     sections=[
         SectionDef(
-            "tracklist", navigable=True, duration_key="duration",
+            "tracklist",
+            navigable=True,
+            duration_key="duration",
             columns=[
                 TableColumn("Title", "name", style="bold"),
                 TableColumn("Duration", "duration", justify="right"),
                 TableColumn(
-                    "Lyrics", "has_lyrics", style="dim", justify="center",
+                    "Lyrics",
+                    "has_lyrics",
+                    style="dim",
+                    justify="center",
                     transform=lambda v: "Yes" if v else "",
                 ),
             ],
         ),
         SectionDef("lineup", navigable=True, columns=_MEMBER_COLUMNS),
         SectionDef(
-            "reviews", numbered=False,
+            "reviews",
+            numbered=False,
             columns=[
                 TableColumn("Score", "score", justify="right", style="bold"),
                 TableColumn("Title", "title"),
@@ -177,16 +186,14 @@ album_def = EntityDef(
     ],
     header_links=[
         HeaderLink(
-            "Band: {band}", "band",
-            ref_fn=lambda d: BandAPI.url(d["band_id"][0])
-            if len(d.get("band_id", [])) == 1
-            else None,
+            "Band: {band}",
+            "band",
+            ref_fn=lambda d: BandAPI.url(d["band_id"][0]) if len(d.get("band_id", [])) == 1 else None,
         ),
         HeaderLink(
-            "Label: {label}", "label",
-            ref_fn=lambda d: LabelAPI.url(d["label_id"][0])
-            if len(d.get("label_id", [])) == 1
-            else None,
+            "Label: {label}",
+            "label",
+            ref_fn=lambda d: LabelAPI.url(d["label_id"][0]) if len(d.get("label_id", [])) == 1 else None,
         ),
     ],
     footer=[
@@ -202,7 +209,8 @@ artist_def = EntityDef(
     summary=[
         SummaryField(key="name", style="bold"),
         SummaryField(
-            key="real_name", style="dim",
+            key="real_name",
+            style="dim",
             transform=lambda v: f"({v})" if v else "",
             fallback="N/A",
         ),
@@ -219,7 +227,10 @@ artist_def = EntityDef(
     sections=[
         SectionDef("biography"),
         SectionDef(
-            "bands_overview", label="Bands", navigable=True, group_key="type",
+            "bands_overview",
+            label="Bands",
+            navigable=True,
+            group_key="type",
             nav_items=lambda d: [entry["band"] for entry in d.get("bands_overview", [])],
             columns=[
                 TableColumn("Band", "band.name", style="bold"),
@@ -286,7 +297,8 @@ label_def = EntityDef(
         SectionDef("current_roster", navigable=True, columns=_ROSTER_COLUMNS),
         SectionDef("past_roster", navigable=True, columns=_ROSTER_COLUMNS),
         SectionDef(
-            "releases", navigable=True,
+            "releases",
+            navigable=True,
             columns=[
                 TableColumn("Year", "release_date", style="dim", width=6),
                 TableColumn("Band", "band"),
@@ -350,18 +362,25 @@ def _build_parser() -> argparse.ArgumentParser:
     entity_group = parser.add_mutually_exclusive_group()
     for entity in ENTITY_TYPES:
         entity_group.add_argument(
-            f"--{entity}", nargs="?", const=True, default=None,
-            metavar="NAME", help=f"Search {entity}s (optionally by name)",
+            f"--{entity}",
+            nargs="?",
+            const=True,
+            default=None,
+            metavar="NAME",
+            help=f"Search {entity}s (optionally by name)",
         )
 
     parser.add_argument("--genre", type=str, help="Filter by genre")
     parser.add_argument("--country", type=str, help="Filter by country (ISO code)")
     parser.add_argument("--themes", type=str, help="Filter bands by lyrical themes")
     parser.add_argument(
-        "--year", type=str, help="Filter by year or range (e.g. 1995 or 1990-1995)",
+        "--year",
+        type=str,
+        help="Filter by year or range (e.g. 1995 or 1990-1995)",
     )
     parser.add_argument(
-        "--status", type=str,
+        "--status",
+        type=str,
         help="Filter bands by status (active, split-up, on hold, changed name, unknown)",
     )
     parser.add_argument("--location", type=str, help="Filter by location")
@@ -369,36 +388,47 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lyrics", type=str, help="Search songs by lyrics content")
     parser.add_argument("--random", action="store_true", help="Open a random band page")
     parser.add_argument(
-        "--recent", action="store_true",
+        "--recent",
+        action="store_true",
         help="Show recently added/modified entries (default: bands, or --label)",
     )
     parser.add_argument(
-        "--new", action="store_true",
+        "--new",
+        action="store_true",
         help="Show only newly created entries (implies --recent)",
     )
     parser.add_argument(
-        "--modified", action="store_true",
+        "--modified",
+        action="store_true",
         help="Show only recently modified entries (implies --recent)",
     )
     parser.add_argument("--upcoming", action="store_true", help="Show upcoming releases")
     parser.add_argument(
-        "--month", type=str,
+        "--month",
+        type=str,
         help="Month for --recent (YYYY-MM format, default: current month)",
     )
     parser.add_argument(
-        "--from", dest="from_date", type=str,
+        "--from",
+        dest="from_date",
+        type=str,
         help="Start date (YYYY-MM-DD) for --recent or --upcoming",
     )
     parser.add_argument(
-        "--to", dest="to_date", type=str,
+        "--to",
+        dest="to_date",
+        type=str,
         help="End date (YYYY-MM-DD) for --recent or --upcoming",
     )
     parser.add_argument(
-        "-s", "--search", action="store_true",
+        "-s",
+        "--search",
+        action="store_true",
         help="Show all matches instead of only exact ones",
     )
     parser.add_argument(
-        "--full", action="store_true",
+        "--full",
+        action="store_true",
         help="Show all sections at once (no interactive menu)",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -418,8 +448,7 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
     """
     if entity_type not in VALID_FILTERS:
         console.print(
-            f"[red]Advanced search not available for {entity_type}s. "
-            f"Use --band, --album, or --song.[/red]"
+            f"[red]Advanced search not available for {entity_type}s. Use --band, --album, or --song.[/red]"
         )
         return None
 
@@ -446,10 +475,7 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
 
     status = getattr(args, "status", None)
     if status and not STATUS_MAP.get(status.lower()):
-        console.print(
-            f"[red]Unknown status '{status}'. "
-            f"Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]"
-        )
+        console.print(f"[red]Unknown status '{status}'. Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]")
         return None
 
     return build_filters(
@@ -472,7 +498,8 @@ def _run_search(navigator, query, entity_type, args):
     """Search by name, select a result, then display or navigate."""
     search_types = [entity_type] if entity_type else ENTITY_TYPES
     navigator.search_and_navigate(
-        query, search_types,
+        query,
+        search_types,
         exact_first=not args.search,
         json_output=args.json,
         full=args.full,
@@ -506,10 +533,7 @@ def _run_listing(navigator, entity_type, args):
 
     if args.upcoming:
         if args.month:
-            console.print(
-                "[yellow]--month has no effect with --upcoming; "
-                "use --from/--to instead.[/yellow]"
-            )
+            console.print("[yellow]--month has no effect with --upcoming; use --from/--to instead.[/yellow]")
         if args.json:
             with console.status("Fetching upcoming releases..."):
                 releases = api.fetch_upcoming(from_date=args.from_date, to_date=args.to_date)
@@ -520,7 +544,10 @@ def _run_listing(navigator, entity_type, args):
             return
         navigator.browse(
             fetch_page=lambda s, c: api.fetch_upcoming_page(
-                s, c, from_date=args.from_date, to_date=args.to_date,
+                s,
+                c,
+                from_date=args.from_date,
+                to_date=args.to_date,
             ),
             title="Upcoming releases",
             full=args.full,
@@ -534,8 +561,10 @@ def _run_listing(navigator, entity_type, args):
     from_date, to_date = parsed
 
     modes = (
-        ["created"] if args.new and not args.modified
-        else ["modified"] if args.modified and not args.new
+        ["created"]
+        if args.new and not args.modified
+        else ["modified"]
+        if args.modified and not args.new
         else ["created", "modified"]
     )
 
@@ -558,8 +587,7 @@ def _run_listing(navigator, entity_type, args):
             return
 
         browsers = [
-            (mode_label(mode, entity_type, len(fetched[mode])), list_fetcher(fetched[mode]))
-            for mode in modes
+            (mode_label(mode, entity_type, len(fetched[mode])), list_fetcher(fetched[mode])) for mode in modes
         ]
     else:
         month = args.month
@@ -569,7 +597,8 @@ def _run_listing(navigator, entity_type, args):
             with console.status("Fetching all results..."):
                 for mode in modes:
                     fetched[mode] = (
-                        api.fetch_recently_created(month) if mode == "created"
+                        api.fetch_recently_created(month)
+                        if mode == "created"
                         else api.fetch_recently_modified(month)
                     )
             print(json.dumps(fetched, indent=2))
@@ -584,8 +613,10 @@ def _run_listing(navigator, entity_type, args):
                 _, totals[mode] = api.fetch_recent_page(mode, month)
 
         browsers = [
-            (mode_label(mode, entity_type, totals[mode]),
-             lambda s, c, mode=mode: api.fetch_recent_page(mode, month, s, c))
+            (
+                mode_label(mode, entity_type, totals[mode]),
+                lambda s, c, mode=mode: api.fetch_recent_page(mode, month, s, c),
+            )
             for mode in modes
         ]
 
@@ -623,16 +654,15 @@ def main():
                     console.print("[red]Could not fetch random band.[/red]")
                     return
                 navigator.display_or_navigate(
-                    band, json_output=args.json, full=args.full,
+                    band,
+                    json_output=args.json,
+                    full=args.full,
                 )
                 return
 
             elif args.upcoming:
                 if entity_type and entity_type != "album":
-                    console.print(
-                        f"[yellow]--upcoming only lists albums; "
-                        f"ignoring --{entity_type}.[/yellow]"
-                    )
+                    console.print(f"[yellow]--upcoming only lists albums; ignoring --{entity_type}.[/yellow]")
                 _run_listing(navigator, "album", args)
                 return
 
@@ -677,5 +707,3 @@ def main():
             # Entity fetches are already softened by MissingTolerantAPI; this
             # covers the random and listing paths, which call the API directly.
             console.print("[red]That entry no longer exists on Metal Archives.[/red]")
-
-

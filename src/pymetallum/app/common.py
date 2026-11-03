@@ -45,9 +45,7 @@ LAZY_FETCHERS = {
     ("band", "similar_artists"): lambda api, entity: api.fetch_similar_artists(entity["id"]),
     # Resolved song entities key their track ID as "id"; "song_id" only exists
     # on raw tracklist rows, which never reach a lazy section.
-    ("song", "lyrics"): lambda api, entity: (
-        api.fetch_lyrics(entity["id"]) if entity.get("id") else None
-    ),
+    ("song", "lyrics"): lambda api, entity: api.fetch_lyrics(entity["id"]) if entity.get("id") else None,
 }
 
 # ─── API factory ─────────────────────────────────────────────────────────────
@@ -188,9 +186,7 @@ def build_filters(entity_type: str, **kwargs: str | None) -> dict[str, str]:
         if param:
             filters[param] = label
         else:
-            logger.warning(
-                f"Label filter not supported for {entity_type} search, ignoring"
-            )
+            logger.warning(f"Label filter not supported for {entity_type} search, ignoring")
 
     lyrics = kwargs.get("lyrics")
     if lyrics:

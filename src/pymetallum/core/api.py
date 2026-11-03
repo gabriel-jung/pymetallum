@@ -107,9 +107,7 @@ class BaseAPI:
     # Frontends that want the softer behaviour wrap the API instead; see
     # MissingTolerantAPI in app/common.py.
 
-    def _get(
-        self, url: str, params: dict | None = None, crawl: bool = False
-    ) -> str | None:
+    def _get(self, url: str, params: dict | None = None, crawl: bool = False) -> str | None:
         """Fetch a page, returning None if it does not exist."""
         try:
             return self._client.get(url, params, crawl=crawl)
@@ -117,9 +115,7 @@ class BaseAPI:
             logger.debug(f"404 for {url}")
             return None
 
-    def _get_json(
-        self, url: str, params: dict | None = None, crawl: bool = False
-    ) -> dict | None:
+    def _get_json(self, url: str, params: dict | None = None, crawl: bool = False) -> dict | None:
         """Fetch a JSON endpoint, returning None if it does not exist."""
         try:
             return self._client.get_json(url, params, crawl=crawl)
@@ -206,9 +202,7 @@ class BaseAPI:
             Tuple of (list of item dicts, total matching records).
         """
         if not self._ARCHIVE_ENDPOINT or not self._ARCHIVE_ROW_PARSER:
-            raise NotImplementedError(
-                f"{type(self).__name__} does not support archive listings."
-            )
+            raise NotImplementedError(f"{type(self).__name__} does not support archive listings.")
         if month is None:
             month = date.today().strftime("%Y-%m")
 
@@ -226,26 +220,31 @@ class BaseAPI:
                 return [], 0
             return data.get("aaData", []), data.get("iTotalRecords", 0)
 
-        rows, total = self._fetch_row_window(
-            fetch_block, start, count, self._ARCHIVE_BLOCK
-        )
+        rows, total = self._fetch_row_window(fetch_block, start, count, self._ARCHIVE_BLOCK)
         row_parser = getattr(self, self._ARCHIVE_ROW_PARSER)
         return [r for row in rows if (r := row_parser(row, date_key))], total
 
     def fetch_recently_created(
-        self, month: str | None = None, batch_size: int = 200,
+        self,
+        month: str | None = None,
+        batch_size: int = 200,
     ) -> list[dict[str, Any]]:
         """Fetch all items recently created for a given month."""
         return self._fetch_all_archive("created", month, batch_size)
 
     def fetch_recently_modified(
-        self, month: str | None = None, batch_size: int = 200,
+        self,
+        month: str | None = None,
+        batch_size: int = 200,
     ) -> list[dict[str, Any]]:
         """Fetch all items recently modified for a given month."""
         return self._fetch_all_archive("modified", month, batch_size)
 
     def _fetch_all_archive(
-        self, mode: str, month: str | None, batch_size: int,
+        self,
+        mode: str,
+        month: str | None,
+        batch_size: int,
     ) -> list[dict[str, Any]]:
         """Fetch all items from an archive listing (created or modified)."""
         return self._paginate(
@@ -327,8 +326,7 @@ class BaseAPI:
 
         if len(rows) != block and block_start + len(rows) < total:
             logger.warning(
-                f"Expected {block} rows per block but got {len(rows)}; "
-                f"listing pagination may be misaligned."
+                f"Expected {block} rows per block but got {len(rows)}; listing pagination may be misaligned."
             )
 
         offset = start - block_start
@@ -346,9 +344,7 @@ class BaseAPI:
             next_start += len(more)
         return window, total
 
-    def _fetch_and_parse(
-        self, url: str, parser_class: Callable, **kwargs
-    ) -> dict | None:
+    def _fetch_and_parse(self, url: str, parser_class: Callable, **kwargs) -> dict | None:
         """Fetch a detail page, run it through a parser, and return the result.
 
         This is the standard pattern for all ``get()`` methods: fetch HTML,
@@ -407,9 +403,7 @@ class BaseAPI:
         if not data:
             return []
 
-        results = [
-            parsed for item in data.get("aaData", []) if (parsed := row_parser(item))
-        ]
+        results = [parsed for item in data.get("aaData", []) if (parsed := row_parser(item))]
 
         if exact_match:
             return [r for r in results if r.get("name", "").lower() == query.lower()]
@@ -451,14 +445,10 @@ class BaseAPI:
         if not data:
             return [], 0
 
-        results = [
-            parsed for row in data.get("aaData", []) if (parsed := row_parser(row))
-        ]
+        results = [parsed for row in data.get("aaData", []) if (parsed := row_parser(row))]
         return results, data.get("iTotalRecords", len(results))
 
-    def advanced_search(
-        self, start: int = 0, count: int = 200, **filters: Any
-    ) -> tuple[list[dict], int]:
+    def advanced_search(self, start: int = 0, count: int = 200, **filters: Any) -> tuple[list[dict], int]:
         """Run an advanced search with filters and pagination.
 
         Uses the class-level ``_ADVANCED_ENDPOINT``, ``_ADVANCED_DEFAULTS``,
@@ -476,14 +466,8 @@ class BaseAPI:
             NotImplementedError: If the subclass doesn't define the required
                 class attributes for advanced search.
         """
-        if (
-            not self._ADVANCED_ENDPOINT
-            or self._ADVANCED_DEFAULTS is None
-            or not self._ADVANCED_ROW_PARSER
-        ):
-            raise NotImplementedError(
-                f"{type(self).__name__} does not support advanced search."
-            )
+        if not self._ADVANCED_ENDPOINT or self._ADVANCED_DEFAULTS is None or not self._ADVANCED_ROW_PARSER:
+            raise NotImplementedError(f"{type(self).__name__} does not support advanced search.")
         columns = self._advanced_layout(filters)
         row_parser = getattr(self, self._ADVANCED_ROW_PARSER)
         return self._generic_advanced_search(
@@ -505,14 +489,10 @@ class BaseAPI:
         filter combination changes. Subclasses that support advanced search
         override this to describe their own table.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} does not describe an advanced column layout."
-        )
+        raise NotImplementedError(f"{type(self).__name__} does not describe an advanced column layout.")
 
     @staticmethod
-    def _apply_layout(
-        result: dict, row: list[str], columns: list[str], skip: tuple[str, ...]
-    ) -> dict:
+    def _apply_layout(result: dict, row: list[str], columns: list[str], skip: tuple[str, ...]) -> dict:
         """Fill ``result`` from ``row`` according to ``columns``.
 
         Cells are read as HTML: Metal Archives embeds sort keys as comments
@@ -601,9 +581,7 @@ class BandAPI(BaseAPI):
             List of band dicts with keys: ``_type``, ``name``, ``url``, ``id``,
             ``genre``, ``country``.
         """
-        return self._generic_search(
-            "/search/ajax-band-search/", query, self._parse_search_row, exact_match
-        )
+        return self._generic_search("/search/ajax-band-search/", query, self._parse_search_row, exact_match)
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/bands"
     _ADVANCED_ROW_PARSER = "_parse_advanced_row"
@@ -657,9 +635,7 @@ class BandAPI(BaseAPI):
         }
         return self._apply_layout(result, row, columns, skip=("name",))
 
-    def advanced_search(
-        self, start: int = 0, count: int = 200, **filters: Any
-    ) -> tuple[list[dict], int]:
+    def advanced_search(self, start: int = 0, count: int = 200, **filters: Any) -> tuple[list[dict], int]:
         """Advanced band search, filling in the country the results share.
 
         When filtering by country the endpoint drops that column (every hit
@@ -674,9 +650,7 @@ class BandAPI(BaseAPI):
                     result["country"] = country
         return results, total
 
-    def get_random(
-        self, full: bool = False, with_media: bool = True, **kwargs
-    ) -> dict | None:
+    def get_random(self, full: bool = False, with_media: bool = True, **kwargs) -> dict | None:
         """Fetch a random band from Metal Archives.
 
         Uses the ``/band/random`` endpoint which redirects to a random band
@@ -734,9 +708,7 @@ class BandAPI(BaseAPI):
         band = self._fetch_and_parse(band_url, BandPageParser, **kwargs)
         return self._enrich_band(band, full, with_media)
 
-    def _enrich_band(
-        self, band: dict | None, full: bool = False, with_media: bool = True
-    ) -> dict | None:
+    def _enrich_band(self, band: dict | None, full: bool = False, with_media: bool = True) -> dict | None:
         """Add discography, logo, and optional extras to a parsed band dict."""
         if not band:
             return None
@@ -909,7 +881,10 @@ class BandAPI(BaseAPI):
             return results, data.get("iTotalRecords", 0)
 
         return self._paginate(
-            fetch_page, batch_size, label=f"bands for letter: {letter}", verbose=verbose,
+            fetch_page,
+            batch_size,
+            label=f"bands for letter: {letter}",
+            verbose=verbose,
         )
 
     def fetch_all_bands_list(self) -> list[dict[str, Any]]:
@@ -956,9 +931,7 @@ class BandAPI(BaseAPI):
             "status": _html_text(row[3]),
         }
 
-    def _parse_archive_row(
-        self, row: list[str], date_key: str
-    ) -> dict[str, Any] | None:
+    def _parse_archive_row(self, row: list[str], date_key: str) -> dict[str, Any] | None:
         """Parse a row from the band archive listing (6 columns).
 
         Columns: [grouping (hidden), band_link, country_link, genre, date, user].
@@ -1024,9 +997,7 @@ class AlbumAPI(BaseAPI):
             List of album dicts with keys: ``_type``, ``name``, ``band``,
             ``url``, ``id``.
         """
-        return self._generic_search(
-            "/search/ajax-album-search/", query, self._parse_search_row, exact_match
-        )
+        return self._generic_search("/search/ajax-album-search/", query, self._parse_search_row, exact_match)
 
     _ADVANCED_ENDPOINT = "/search/ajax-advanced/searching/albums"
     _ADVANCED_ROW_PARSER = "_parse_advanced_row"
@@ -1066,9 +1037,7 @@ class AlbumAPI(BaseAPI):
         """
         columns = ["band", "name", "album_type"]
         for param, field in self._ADVANCED_EXTRAS:
-            if filters.get(param) or (
-                field == "release_date" and filters.get("releaseYearTo")
-            ):
+            if filters.get(param) or (field == "release_date" and filters.get("releaseYearTo")):
                 columns.append(field)
         return columns
 
@@ -1162,9 +1131,7 @@ class AlbumAPI(BaseAPI):
                 return [], 0
             return data.get("aaData", []), data.get("iTotalRecords", 0)
 
-        rows, total = self._fetch_row_window(
-            fetch_block, start, count, self._UPCOMING_BLOCK
-        )
+        rows, total = self._fetch_row_window(fetch_block, start, count, self._UPCOMING_BLOCK)
         return [r for row in rows if (r := self._parse_upcoming_row(row))], total
 
     def fetch_upcoming(
@@ -1187,7 +1154,11 @@ class AlbumAPI(BaseAPI):
         """
         return self._paginate(
             lambda start: self.fetch_upcoming_page(
-                start, batch_size, from_date, to_date, include_versions,
+                start,
+                batch_size,
+                from_date,
+                to_date,
+                include_versions,
             ),
             batch_size=batch_size,
             label="upcoming releases",
@@ -1265,9 +1236,7 @@ class ArtistAPI(BaseAPI):
             List of artist dicts with keys: ``_type``, ``name``, ``url``,
             ``real_name``, ``country``, and optionally ``bands``.
         """
-        return self._generic_search(
-            "/search/ajax-artist-search/", query, self._parse_search_row, exact_match
-        )
+        return self._generic_search("/search/ajax-artist-search/", query, self._parse_search_row, exact_match)
 
     def get(self, artist_url: str, with_media: bool = True, **kwargs) -> dict | None:
         """Fetch and parse an artist's detail page.
@@ -1334,9 +1303,7 @@ class LabelAPI(BaseAPI):
             List of label dicts with keys: ``_type``, ``name``, ``url``,
             ``id``, ``country``, ``specialisation``.
         """
-        return self._generic_search(
-            "/search/ajax-label-search/", query, self._parse_search_row, exact_match
-        )
+        return self._generic_search("/search/ajax-label-search/", query, self._parse_search_row, exact_match)
 
     _LABEL_TABLE_PAGE = 500
 
@@ -1366,9 +1333,7 @@ class LabelAPI(BaseAPI):
         rows: list = []
         start = 0
         while True:
-            data = self._get_json(
-                url, {"iDisplayStart": start, "iDisplayLength": page}
-            )
+            data = self._get_json(url, {"iDisplayStart": start, "iDisplayLength": page})
             if not data:
                 break
             batch = data.get("aaData", [])
@@ -1436,7 +1401,10 @@ class LabelAPI(BaseAPI):
             return results, data.get("iTotalRecords", 0)
 
         return self._paginate(
-            fetch_page, batch_size, label=f"labels for letter: {letter}", verbose=verbose,
+            fetch_page,
+            batch_size,
+            label=f"labels for letter: {letter}",
+            verbose=verbose,
         )
 
     def _parse_label_list_row(self, row: list[str]) -> dict[str, Any] | None:
@@ -1463,9 +1431,7 @@ class LabelAPI(BaseAPI):
             "specialisation": _html_text(row[2]),
         }
 
-    def _parse_label_archive_row(
-        self, row: list[str], date_key: str
-    ) -> dict[str, Any] | None:
+    def _parse_label_archive_row(self, row: list[str], date_key: str) -> dict[str, Any] | None:
         """Parse a row from the label archive listing (6 columns).
 
         Columns: [date_grouping, label_link, status, country, datetime, user].
@@ -1568,9 +1534,7 @@ class SongAPI(BaseAPI):
         parts = urlsplit(base)
         params = parse_qs(parts.query)
         names = params.pop(cls._SONG_QUERY_KEY, [])
-        album_url = urlunsplit(
-            (parts.scheme, parts.netloc, parts.path, urlencode(params, doseq=True), "")
-        )
+        album_url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params, doseq=True), ""))
         return album_url, fragment or None, names[0] if names else None
 
     def _parse_search_row(self, row: list[str]) -> dict | None:
@@ -1628,9 +1592,7 @@ class SongAPI(BaseAPI):
             album URL tagged with ``?song=``), ``id`` (None until ``get()``
             resolves it), ``band``, ``album``, ``album_type``.
         """
-        return self._generic_search(
-            "/search/ajax-song-search/", query, self._parse_search_row, exact_match
-        )
+        return self._generic_search("/search/ajax-song-search/", query, self._parse_search_row, exact_match)
 
     def get(self, song_url: str, **kwargs) -> dict | None:
         """Fetch a song's details by parsing its parent album page.
