@@ -1316,9 +1316,8 @@ class LabelAPI(BaseAPI):
         dicts with ``text`` and ``links`` keys, plain text cells as strings.
 
         The endpoint caps a response at its page size no matter what
-        ``nbrPerPage`` asks for, so every page has to be walked. Only requesting
-        the first silently truncated large catalogues: Nuclear Blast reports
-        6,372 releases and returned 500 of them.
+        ``nbrPerPage`` asks for, so every page has to be walked: requesting only
+        the first page silently truncates any catalogue larger than one page.
 
         Args:
             endpoint: The AJAX endpoint name (e.g. ``ajax-bands``).

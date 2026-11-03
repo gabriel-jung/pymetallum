@@ -5,7 +5,7 @@ build-backend = "uv_build"
 
 [project]
 name = "pymetallum"
-version = "0.5.10"
+version = "0.5.11"
 authors = [
   { name = "Gabriel Jung", email = "gabriel.jung@protonmail.com" },
 ]
@@ -35,7 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 discord = [
     "discord.py>=2.7.0",
-    "discord-metadata>=0.1.0",
+    "discord-metadata>=0.1.2",
     "python-dotenv>=1.0.0",
 ]
 
@@ -69,6 +69,6 @@ dev = [
 ]
 discord = [
     "discord.py>=2.7.0",
-    "discord-metadata>=0.1.0",
+    "discord-metadata>=0.1.2",
     "python-dotenv>=1.0.0",
 ]
