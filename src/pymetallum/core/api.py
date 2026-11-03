@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, quote, urlencode, urlsplit, urlunsplit
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from .client import BASE_URL, MetalArchivesClient, NotFoundError
+from .client import BASE_URL, FetchError, MetalArchivesClient, NotFoundError
 from .countries import CODE_TO_COUNTRY
 from .parsers import (
     AlbumPageParser,
@@ -97,15 +97,18 @@ class BaseAPI:
     #
     # Used for the supporting requests behind an entity: discography, images,
     # roster tables, lyrics, listings and searches. A 404 there means the extra
-    # data does not exist, which is not a reason to fail the whole fetch.
+    # data does not exist, which is not a reason to fail the whole fetch. Any
+    # other failure raises FetchError (BlockedError for a Cloudflare block),
+    # so a failed request is never mistaken for an empty result. Only image
+    # bytes, which are cosmetic, are dropped on failure (_get_image).
     #
     # The entity page itself deliberately does NOT go through these. Its 404 is
     # the only way a caller can tell "this entry was deleted" from "this fetch
-    # failed", and consumers rely on that: the scraping pipeline marks an entry
-    # deleted on NotFoundError and retries it on any other failure. Swallowing
-    # it there would silently turn deletions into permanent retries.
-    # Frontends that want the softer behaviour wrap the API instead; see
-    # MissingTolerantAPI in app/common.py.
+    # failed", and consumers rely on that: a caller that records deletions acts
+    # on NotFoundError and retries on FetchError. Swallowing the 404 there would
+    # silently turn deletions into permanent retries. Frontends that want the
+    # softer behaviour wrap the API instead; see MissingTolerantAPI in
+    # app/common.py.
 
     def _get(self, url: str, params: dict | None = None, crawl: bool = False) -> str | None:
         """Fetch a page, returning None if it does not exist."""
@@ -123,13 +126,19 @@ class BaseAPI:
             logger.debug(f"404 for {url}")
             return None
 
-    def _get_bytes(self, url: str, crawl: bool = False) -> bytes | None:
-        """Fetch binary content, returning None if it does not exist."""
+    def _get_image(self, url: str) -> bytes | None:
+        """Fetch image bytes for display; None if missing or the request failed.
+
+        Images are cosmetic, so a failed download is logged and dropped rather
+        than failing the entity it belongs to.
+        """
         try:
-            return self._client.get_bytes(url, crawl=crawl)
+            return self._client.get_bytes(url)
         except NotFoundError:
             logger.debug(f"404 for {url}")
-            return None
+        except FetchError as e:
+            logger.warning(f"Image skipped ({e}): {url}")
+        return None
 
     def fetch_recent_filtered(
         self,
@@ -201,6 +210,13 @@ class BaseAPI:
         Returns:
             Tuple of (list of item dicts, total matching records).
         """
+        items, total, _ = self._recent_window(mode, month, start, count)
+        return items, total
+
+    def _recent_window(
+        self, mode: str, month: str | None, start: int, count: int
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """``fetch_recent_page`` plus the raw row count, for ``_paginate``."""
         if not self._ARCHIVE_ENDPOINT or not self._ARCHIVE_ROW_PARSER:
             raise NotImplementedError(f"{type(self).__name__} does not support archive listings.")
         if month is None:
@@ -222,7 +238,7 @@ class BaseAPI:
 
         rows, total = self._fetch_row_window(fetch_block, start, count, self._ARCHIVE_BLOCK)
         row_parser = getattr(self, self._ARCHIVE_ROW_PARSER)
-        return [r for row in rows if (r := row_parser(row, date_key))], total
+        return [r for row in rows if (r := row_parser(row, date_key))], total, len(rows)
 
     def fetch_recently_created(
         self,
@@ -248,7 +264,7 @@ class BaseAPI:
     ) -> list[dict[str, Any]]:
         """Fetch all items from an archive listing (created or modified)."""
         return self._paginate(
-            lambda start: self.fetch_recent_page(mode, month, start, batch_size),
+            lambda start: self._recent_window(mode, month, start, batch_size),
             batch_size=batch_size,
             label=f"{mode} items for {month}",
             verbose=True,
@@ -256,36 +272,58 @@ class BaseAPI:
 
     def _paginate(
         self,
-        fetch_page: Callable[[int], tuple[list[dict[str, Any]], int]],
+        fetch_page: Callable[[int], tuple[list[dict[str, Any]], int, int]],
         batch_size: int,
         label: str,
         verbose: bool = True,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Accumulate all pages from a ``(start) -> (items, total)`` fetcher.
+        """Accumulate all pages from a ``(start) -> (items, total, raw_rows)`` fetcher.
+
+        ``raw_rows`` is how many rows the server sent before parsing. Paging
+        advances by it, so rows the parser drops cannot shift the next page
+        and a server that caps the page size below ``batch_size`` cannot make
+        pages be skipped; and only a page with no raw rows counts as empty.
 
         Args:
             fetch_page: Callable taking a start offset, returning
-                ``(items, total_records)``. Use a closure to bind endpoint,
-                filter, and row-parser context.
-            batch_size: Page size passed in by the closure; used to advance start.
-            label: Human-readable noun phrase for progress logs (e.g.
+                ``(items, total_records, raw_row_count)``. Use a closure to bind
+                endpoint, filter, and row-parser context.
+            batch_size: Page size the closure requests (used only to size the
+                first request; paging advances by ``raw_rows``).
+            label: Human-readable noun phrase for logs and errors (e.g.
                 ``"bands for letter A"``, ``"upcoming releases"``).
             verbose: If True, log start/progress/completion.
+            limit: Stop once this many items are collected (default: all).
+
+        Raises:
+            FetchError: If a page request fails, or a page before the reported
+                total comes back missing or empty; a partial list is never
+                returned as if it were complete.
         """
         all_items: list[dict[str, Any]] = []
         start = 0
+        total = 0
         while True:
-            results, total = fetch_page(start)
+            items, page_total, raw = fetch_page(start)
+            # A later page that 404s or errors reports a total of 0; keep the
+            # last real total so the shortfall is still visible.
+            if start == 0 or page_total:
+                total = page_total
             if start == 0 and verbose:
                 logger.info(f"Fetching {total} {label}")
-            if not results:
+            if not raw:
+                if start < total:
+                    raise FetchError(f"Listing of {label} stopped at {start} of {total} rows")
                 break
-            all_items.extend(results)
-            if verbose and len(all_items) < total:
-                logger.debug(f"  Progress: {len(all_items)}/{total}")
-            if len(all_items) >= total:
+            all_items.extend(items)
+            start += raw
+            if verbose and start < total:
+                logger.debug(f"  Progress: {start}/{total}")
+            if start >= total or (limit is not None and len(all_items) >= limit):
                 break
-            start += batch_size
+        if limit is not None:
+            all_items = all_items[:limit]
         if verbose:
             logger.success(f"Completed: {len(all_items)} {label}")
         return all_items
@@ -333,12 +371,11 @@ class BaseAPI:
         window = rows[offset : offset + count]
         next_start = block_start + len(rows)
         while len(window) < count and next_start < total:
-            # Bind the follow-up total separately: a failed block answers
-            # (etc, 0), and assigning that straight to `total` would report the
-            # listing as empty even though the window holds rows.
+            # Bind the follow-up total separately so it only replaces the
+            # known total once the block actually delivered rows.
             more, more_total = fetch_block(next_start)
             if not more:
-                break
+                raise FetchError(f"Listing block at {next_start} of {total} came back empty")
             total = more_total
             window.extend(more[: count - len(window)])
             next_start += len(more)
@@ -361,7 +398,7 @@ class BaseAPI:
             **kwargs: Additional arguments passed to the parser constructor.
 
         Returns:
-            Parsed entity dict with ``_type`` key, or None on fetch failure.
+            Parsed entity dict with ``_type`` key, or None for an empty page.
 
         Raises:
             NotFoundError: If the page no longer exists, so callers can tell a
@@ -409,50 +446,11 @@ class BaseAPI:
             return [r for r in results if r.get("name", "").lower() == query.lower()]
         return results
 
-    def _generic_advanced_search(
-        self,
-        endpoint: str,
-        row_parser: Callable,
-        defaults: dict[str, Any],
-        start: int = 0,
-        count: int = 200,
-        **filters: Any,
-    ) -> tuple[list[dict], int]:
-        """Run an advanced search with arbitrary filters and pagination.
-
-        Args:
-            endpoint: The advanced search endpoint path (e.g.
-                ``/search/ajax-advanced/searching/bands``).
-            row_parser: Method to parse each result row into a dict.
-            defaults: Default parameter dict for this entity type.
-            start: Offset into results (for pagination).
-            count: Number of results per page.
-            **filters: Override any default params with these values.
-
-        Returns:
-            Tuple of (list of parsed dicts, total number of matching records).
-        """
-        params = {
-            **defaults,
-            "sEcho": 1,
-            "iDisplayStart": start,
-            "iDisplayLength": count,
-        }
-        params.update(filters)
-
-        url = f"{self._base_url}{endpoint}"
-        data = self._get_json(url, params)
-        if not data:
-            return [], 0
-
-        results = [parsed for row in data.get("aaData", []) if (parsed := row_parser(row))]
-        return results, data.get("iTotalRecords", len(results))
-
     def advanced_search(self, start: int = 0, count: int = 200, **filters: Any) -> tuple[list[dict], int]:
         """Run an advanced search with filters and pagination.
 
         Uses the class-level ``_ADVANCED_ENDPOINT``, ``_ADVANCED_DEFAULTS``,
-        and ``_ADVANCED_ROW_PARSER`` to dispatch to ``_generic_advanced_search``.
+        and ``_ADVANCED_ROW_PARSER``.
 
         Args:
             start: Offset into results (for pagination).
@@ -461,23 +459,53 @@ class BaseAPI:
 
         Returns:
             Tuple of (list of parsed dicts, total number of matching records).
+            A few malformed rows can be left out of the list.
 
         Raises:
             NotImplementedError: If the subclass doesn't define the required
                 class attributes for advanced search.
+            FetchError: If the request failed.
         """
+        results, total, _ = self._advanced_window(start, count, **filters)
+        return results, total
+
+    def advanced_search_all(self, limit: int | None = None, **filters: Any) -> list[dict]:
+        """Every result of an advanced search (or the first ``limit``), across pages.
+
+        Raises:
+            FetchError: If a page request failed or a page before the total
+                came back empty; partial results are never returned.
+        """
+        return self._paginate(
+            lambda start: self._advanced_window(start, 200, **filters),
+            200,
+            label=f"{type(self).__name__.removesuffix('API').lower()} search results",
+            verbose=False,
+            limit=limit,
+        )
+
+    def _advanced_window(self, start: int, count: int, **filters: Any) -> tuple[list[dict], int, int]:
+        """One page of advanced search results, the total, and the raw row count."""
         if not self._ADVANCED_ENDPOINT or self._ADVANCED_DEFAULTS is None or not self._ADVANCED_ROW_PARSER:
             raise NotImplementedError(f"{type(self).__name__} does not support advanced search.")
         columns = self._advanced_layout(filters)
         row_parser = getattr(self, self._ADVANCED_ROW_PARSER)
-        return self._generic_advanced_search(
-            self._ADVANCED_ENDPOINT,
-            lambda row: row_parser(row, columns),
-            self._ADVANCED_DEFAULTS,
-            start=start,
-            count=count,
+        params = {
+            **self._ADVANCED_DEFAULTS,
+            "sEcho": 1,
+            "iDisplayStart": start,
+            "iDisplayLength": count,
             **filters,
-        )
+        }
+        data = self._get_json(f"{self._base_url}{self._ADVANCED_ENDPOINT}", params)
+        rows = data.get("aaData", []) if data else []
+        results = [parsed for row in rows if (parsed := row_parser(row, columns))]
+        total = data.get("iTotalRecords", len(rows)) if data else 0
+        return self._complete_advanced(results, filters), total, len(rows)
+
+    def _complete_advanced(self, results: list[dict], filters: dict[str, Any]) -> list[dict]:
+        """Hook to fill fields the advanced endpoint leaves out for some filters."""
+        return results
 
     def _advanced_layout(self, filters: dict[str, Any]) -> list[str]:
         """Return the field name of each result column for these filters.
@@ -635,20 +663,19 @@ class BandAPI(BaseAPI):
         }
         return self._apply_layout(result, row, columns, skip=("name",))
 
-    def advanced_search(self, start: int = 0, count: int = 200, **filters: Any) -> tuple[list[dict], int]:
-        """Advanced band search, filling in the country the results share.
+    def _complete_advanced(self, results: list[dict], filters: dict[str, Any]) -> list[dict]:
+        """Fill in the country the results share.
 
         When filtering by country the endpoint drops that column (every hit
         matches it), which would otherwise leave every result displaying an
         unknown country.
         """
-        results, total = super().advanced_search(start, count, **filters)
         country = CODE_TO_COUNTRY.get(str(filters.get("country") or ""))
         if country:
             for result in results:
                 if not result.get("country"):
                     result["country"] = country
-        return results, total
+        return results
 
     def get_random(self, full: bool = False, with_media: bool = True, **kwargs) -> dict | None:
         """Fetch a random band from Metal Archives.
@@ -662,13 +689,13 @@ class BandAPI(BaseAPI):
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
-            Band dict, or None if the request failed.
+            Band dict.
+
+        Raises:
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         url = f"{self._base_url}/band/random"
-        result = self._client.get_with_url(url)
-        if not result:
-            return None
-        html, final_url = result
+        html, final_url = self._client.get_with_url(url)
         valid = _parser_kwargs(BandPageParser)
         filtered = {k: v for k, v in kwargs.items() if k in valid}
         soup = BeautifulSoup(html, "html.parser")
@@ -703,7 +730,11 @@ class BandAPI(BaseAPI):
 
         Returns:
             Band dict with members, discography, and optionally description
-            and similar artists. None if the page could not be fetched.
+            and similar artists.
+
+        Raises:
+            NotFoundError: If the band page no longer exists.
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         band = self._fetch_and_parse(band_url, BandPageParser, **kwargs)
         return self._enrich_band(band, full, with_media)
@@ -722,7 +753,7 @@ class BandAPI(BaseAPI):
                 band["similar_artists"] = self.fetch_similar_artists(band_id)
 
         if with_media and band.get("logo_url"):
-            band["_logo_data"] = self._get_bytes(band["logo_url"])
+            band["_logo_data"] = self._get_image(band["logo_url"])
 
         return band
 
@@ -871,14 +902,14 @@ class BandAPI(BaseAPI):
         """
         url = f"{self._base_url}/browse/ajax-letter/l/{letter}/json/1"
 
-        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
+        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int, int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
             data = self._get_json(url, params, crawl=True)
             if not data:
-                return [], 0
+                return [], 0, 0
             rows = data.get("aaData", [])
             results = [b for row in rows if (b := self._parse_band_list_row(row))]
-            return results, data.get("iTotalRecords", 0)
+            return results, data.get("iTotalRecords", 0), len(rows)
 
         return self._paginate(
             fetch_page,
@@ -1078,14 +1109,17 @@ class AlbumAPI(BaseAPI):
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
-            Album dict with tracklist, lineup, and cover data, or None on
-            fetch failure.
+            Album dict with tracklist, lineup, and cover data.
+
+        Raises:
+            NotFoundError: If the album page no longer exists.
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         kwargs.setdefault("with_tracklist", True)
         kwargs.setdefault("with_lineup", True)
         album = self._fetch_and_parse(album_url, AlbumPageParser, **kwargs)
         if album and with_media and album.get("cover_url"):
-            album["_cover_data"] = self._get_bytes(album["cover_url"])
+            album["_cover_data"] = self._get_image(album["cover_url"])
         return album
 
     def fetch_upcoming_page(
@@ -1112,6 +1146,18 @@ class AlbumAPI(BaseAPI):
         Returns:
             Tuple of (list of album dicts, total matching records).
         """
+        items, total, _ = self._upcoming_window(start, count, from_date, to_date, include_versions)
+        return items, total
+
+    def _upcoming_window(
+        self,
+        start: int,
+        count: int,
+        from_date: str | None,
+        to_date: str | None,
+        include_versions: bool,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        """``fetch_upcoming_page`` plus the raw row count, for ``_paginate``."""
         url = f"{self._base_url}/release/ajax-upcoming/json/1"
         extra_params = {"includeVersions": 1 if include_versions else 0}
         if from_date:
@@ -1132,7 +1178,7 @@ class AlbumAPI(BaseAPI):
             return data.get("aaData", []), data.get("iTotalRecords", 0)
 
         rows, total = self._fetch_row_window(fetch_block, start, count, self._UPCOMING_BLOCK)
-        return [r for row in rows if (r := self._parse_upcoming_row(row))], total
+        return [r for row in rows if (r := self._parse_upcoming_row(row))], total, len(rows)
 
     def fetch_upcoming(
         self,
@@ -1153,13 +1199,7 @@ class AlbumAPI(BaseAPI):
             List of album dicts.
         """
         return self._paginate(
-            lambda start: self.fetch_upcoming_page(
-                start,
-                batch_size,
-                from_date,
-                to_date,
-                include_versions,
-            ),
+            lambda start: self._upcoming_window(start, batch_size, from_date, to_date, include_versions),
             batch_size=batch_size,
             label="upcoming releases",
             verbose=True,
@@ -1255,12 +1295,15 @@ class ArtistAPI(BaseAPI):
             **kwargs: Forwarded to the parser constructor.
 
         Returns:
-            Artist dict with biography and bands overview, or None on fetch
-            failure.
+            Artist dict with biography and bands overview.
+
+        Raises:
+            NotFoundError: If the artist page no longer exists.
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         artist = self._fetch_and_parse(artist_url, ArtistPageParser, **kwargs)
         if artist and with_media and artist.get("photo_url"):
-            artist["_photo_data"] = self._get_bytes(artist["photo_url"])
+            artist["_photo_data"] = self._get_image(artist["photo_url"])
         return artist
 
 
@@ -1329,19 +1372,12 @@ class LabelAPI(BaseAPI):
         page = self._LABEL_TABLE_PAGE
         url = f"{self._base_url}/label/{endpoint}/nbrPerPage/{page}/id/{label_id}"
 
-        rows: list = []
-        start = 0
-        while True:
+        def fetch_page(start: int) -> tuple[list, int, int]:
             data = self._get_json(url, {"iDisplayStart": start, "iDisplayLength": page})
-            if not data:
-                break
-            batch = data.get("aaData", [])
-            if not batch:
-                break
-            rows.extend(batch)
-            start += len(batch)
-            if start >= data.get("iTotalRecords", 0):
-                break
+            batch = data.get("aaData", []) if data else []
+            return batch, data.get("iTotalRecords", 0) if data else 0, len(batch)
+
+        rows = self._paginate(fetch_page, page, label=f"{endpoint} rows of label {label_id}", verbose=False)
 
         parsed_rows = []
         for row_data in rows:
@@ -1390,14 +1426,14 @@ class LabelAPI(BaseAPI):
         """
         url = f"{self._base_url}/label/ajax-list/l/{letter}/json/1"
 
-        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int]:
+        def fetch_page(start: int) -> tuple[list[dict[str, Any]], int, int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
             data = self._get_json(url, params, crawl=True)
             if not data:
-                return [], 0
+                return [], 0, 0
             rows = data.get("aaData", [])
             results = [lbl for row in rows if (lbl := self._parse_label_list_row(row))]
-            return results, data.get("iTotalRecords", 0)
+            return results, data.get("iTotalRecords", 0), len(rows)
 
         return self._paginate(
             fetch_page,
@@ -1466,11 +1502,11 @@ class LabelAPI(BaseAPI):
             **kwargs: Currently unused, kept for API consistency.
 
         Returns:
-            Label dict with contact info, rosters, and releases, or None on
-            fetch failure.
+            Label dict with contact info, rosters, and releases.
 
         Raises:
             NotFoundError: If the label page no longer exists.
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         html = self._client.get(label_url)
         if not html:
@@ -1615,8 +1651,11 @@ class SongAPI(BaseAPI):
 
         Returns:
             Song dict with album context, tracklist position, and optionally
-            lyrics. None if the page could not be fetched or the song was
-            not found in the tracklist.
+            lyrics. None if the song was not found in the tracklist.
+
+        Raises:
+            NotFoundError: If the album page no longer exists.
+            FetchError: If a request failed (``BlockedError`` when blocked).
         """
         album_url, song_id, tagged_name = self._split_ref(song_url)
         html = self._client.get(album_url)

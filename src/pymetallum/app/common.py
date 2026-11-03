@@ -64,14 +64,20 @@ class MissingTolerantAPI:
     error there means a traceback in the CLI and an interaction that never gets
     answered in the bot. Only the entity fetches are softened; everything else
     is passed straight through, and an attribute the wrapped API does not have
-    still raises AttributeError rather than appearing to exist.
+    still raises AttributeError rather than appearing to exist. ``FetchError``
+    is not softened: the navigators report it, and it must not read as "gone".
+
+    ``defaults`` are keyword arguments added to every entity fetch (callers'
+    own arguments win), e.g. ``with_media=False`` for a frontend that shows
+    images by URL.
     """
 
     # Methods that fetch one entity page, and so can legitimately find nothing.
     _TOLERATED = frozenset({"get", "get_random"})
 
-    def __init__(self, api):
+    def __init__(self, api, **defaults):
         self._api = api
+        self._defaults = defaults
 
     def __getattr__(self, name):
         attr = getattr(self._api, name)
@@ -81,7 +87,7 @@ class MissingTolerantAPI:
         @functools.wraps(attr)
         def tolerant(*args, **kwargs):
             try:
-                return attr(*args, **kwargs)
+                return attr(*args, **{**self._defaults, **kwargs})
             except NotFoundError:
                 logger.info("Entry no longer exists on Metal Archives.")
                 return None
@@ -89,15 +95,36 @@ class MissingTolerantAPI:
         return tolerant
 
 
-def make_apis(client):
-    """Create the {type: API} mapping used by both CLI and Discord navigators."""
+def make_apis(client, *, with_media: bool = True):
+    """Create the {type: API} mapping used by both CLI and Discord navigators.
+
+    ``with_media=False`` skips image downloads in every entity fetch (the
+    Discord bot shows images by URL).
+    """
+    media = {} if with_media else {"with_media": False}
     return {
-        "band": MissingTolerantAPI(BandAPI(client)),
-        "album": MissingTolerantAPI(AlbumAPI(client)),
-        "artist": MissingTolerantAPI(ArtistAPI(client)),
-        "song": MissingTolerantAPI(SongAPI(client)),
-        "label": MissingTolerantAPI(LabelAPI(client)),
+        "band": MissingTolerantAPI(BandAPI(client), **media),
+        "album": MissingTolerantAPI(AlbumAPI(client), **media),
+        "artist": MissingTolerantAPI(ArtistAPI(client), **media),
+        "song": MissingTolerantAPI(SongAPI(client), **media),
+        "label": MissingTolerantAPI(LabelAPI(client), **media),
     }
+
+
+def advanced_pager(api, filters: dict):
+    """A ``fetch_page(start, count)`` over an advanced search, for the browse views.
+
+    A row the parser cannot read is shown as a placeholder instead of being
+    left out: the navigators take a short page to mean the end of the data,
+    which would hide every later page.
+    """
+
+    def fetch_page(start: int, count: int):
+        results, total, raw = api._advanced_window(start, count, **filters)
+        padding = [{"name": "(unreadable row)"}] * (raw - len(results))
+        return results + padding, total
+
+    return fetch_page
 
 
 # ─── Advanced search filter helpers ─────────────────────────────────────────

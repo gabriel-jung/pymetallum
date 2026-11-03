@@ -29,6 +29,7 @@ from ..core.countries import resolve_country
 from .common import (
     ENTITY_TYPES,
     LAZY_FETCHERS,
+    advanced_pager,
     band_origin,
     build_filters,
     make_apis,
@@ -275,7 +276,8 @@ engine.register(band_def, album_def, artist_def, song_def, label_def)
 
 def _build_bot() -> MetadataBot:
     client = MetalArchivesClient()
-    apis = {k: SyncAPI(v) for k, v in make_apis(client).items()}
+    # Embeds show images by URL, so the bot never downloads image bytes.
+    apis = {k: SyncAPI(v) for k, v in make_apis(client, with_media=False).items()}
     navigator = BaseNavigator(
         engine,
         apis=apis,
@@ -305,14 +307,16 @@ async def _advanced_search_and_navigate(
     entity_type: str,
     filters: dict[str, str],
 ) -> None:
-    """Run advanced search in a thread and navigate the results."""
+    """Run an advanced search and page through every result."""
     await interaction.response.defer()
 
     raw_api = bot.navigator.apis[entity_type].raw
-    results, _total = await asyncio.to_thread(raw_api.advanced_search, start=0, count=25, **filters)
-
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
-    await bot.navigator.navigate_results(interaction, results, title=filter_desc)
+    await bot.navigator.browse(
+        interaction,
+        advanced_pager(raw_api, filters),
+        title=f"{entity_type.capitalize()}s ({filter_desc})",
+    )
 
 
 def _has_filters(*values) -> bool:

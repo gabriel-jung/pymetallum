@@ -25,6 +25,28 @@ class NotFoundError(Exception):
     """Raised when a Metal Archives page returns HTTP 404."""
 
 
+class FetchError(Exception):
+    """A request failed for a reason other than 404: retry later.
+
+    Raised for network errors and timeouts, 5xx and other HTTP errors (after
+    one retry), and bodies that should be JSON but are not. Unlike
+    :class:`NotFoundError` it never means the page is gone.
+    """
+
+    def __init__(self, message: str, url: str | None = None):
+        super().__init__(message)
+        self.url = url
+
+
+class BlockedError(FetchError):
+    """Metal Archives is refusing requests: back off before retrying.
+
+    Raised for a 403 (Cloudflare) that a session rebuild did not clear and for
+    a 429 (rate limited), and, without touching the network, for every request
+    during the cooldown that follows either.
+    """
+
+
 class MetalArchivesClient:
     """HTTP client for Metal Archives, using curl_cffi to bypass Cloudflare.
 
@@ -53,7 +75,7 @@ class MetalArchivesClient:
         self._session = curl_requests.Session(impersonate="chrome")
         logger.info("HTTP client initialized.")
 
-    def get(self, url: str, params: dict | None = None, crawl: bool = False) -> str | None:
+    def get(self, url: str, params: dict | None = None, crawl: bool = False) -> str:
         """Make a GET request and return the response body as text.
 
         Args:
@@ -62,22 +84,18 @@ class MetalArchivesClient:
             crawl: If True, use the longer crawl delay between requests.
 
         Returns:
-            Response body as a string, or None on failure (timeout, HTTP
-            error, network issue).
+            Response body as a string.
 
         Raises:
             NotFoundError: If the page returns HTTP 404. Callers that treat a
                 missing page as an empty result should use the ``_get*``
                 helpers on ``BaseAPI``, which swallow it.
+            FetchError: If the request failed otherwise (``BlockedError`` when
+                Metal Archives is refusing requests).
         """
-        result = self._request(url, params, crawl)
-        if result is None:
-            return None
-        return result.text
+        return self._request(url, params, crawl).text
 
-    def get_with_url(
-        self, url: str, params: dict | None = None, crawl: bool = False
-    ) -> tuple[str, str] | None:
+    def get_with_url(self, url: str, params: dict | None = None, crawl: bool = False) -> tuple[str, str]:
         """Make a GET request and return both the response body and final URL.
 
         Useful for endpoints that redirect (e.g. /band/random).
@@ -88,17 +106,16 @@ class MetalArchivesClient:
             crawl: If True, use the longer crawl delay between requests.
 
         Returns:
-            Tuple of (response_text, final_url), or None on failure.
+            Tuple of (response_text, final_url).
 
         Raises:
             NotFoundError: If the page returns HTTP 404.
+            FetchError: If the request failed otherwise.
         """
         result = self._request(url, params, crawl)
-        if result is None:
-            return None
         return result.text, str(result.url)
 
-    def get_bytes(self, url: str, crawl: bool = False) -> bytes | None:
+    def get_bytes(self, url: str, crawl: bool = False) -> bytes:
         """Make a GET request and return the response body as raw bytes.
 
         Used for binary content like band photos and album covers, which are
@@ -109,18 +126,16 @@ class MetalArchivesClient:
             crawl: If True, use the longer crawl delay between requests.
 
         Returns:
-            Raw bytes of the response body, or None on failure.
+            Raw bytes of the response body.
 
         Raises:
             NotFoundError: If the image returns HTTP 404.
+            FetchError: If the request failed otherwise.
         """
-        result = self._request(url, crawl=crawl)
-        if result is None:
-            return None
-        return result.content
+        return self._request(url, crawl=crawl).content
 
     def _request(self, url: str, params: dict | None = None, crawl: bool = False):
-        """Internal: execute a GET request and return the response object, or None.
+        """Internal: execute a GET request and return the response object.
 
         Serialized with a lock so concurrent callers (e.g. the Discord bot's
         thread pool) cannot bypass the rate limiter or share the session
@@ -134,14 +149,18 @@ class MetalArchivesClient:
 
         Raises:
             NotFoundError: If the page returns HTTP 404.
+            BlockedError: On a 403 the rebuild did not clear or a 429, and
+                during the cooldown after either (no request is made then).
+            FetchError: On any other failure that the retry did not fix.
         """
         if params:
             url = f"{url}?{urlencode(params, doseq=True)}"
         with self._lock:
             remaining = self._blocked_until - time.time()
             if remaining > 0:
-                logger.warning(f"Skipping {url}: challenge cooldown active ({remaining:.0f}s left)")
-                return None
+                raise BlockedError(
+                    f"Metal Archives is refusing requests, {remaining:.0f}s of cooldown left", url
+                )
 
             self._enforce_rate_limit(crawl=crawl)
             for attempt in range(2):
@@ -152,34 +171,35 @@ class MetalArchivesClient:
                         logger.warning(f"Request error for {url}: {e}, retrying in 3s")
                         time.sleep(3)
                         continue
-                    logger.error(f"Request failed for {url}: {e}")
-                    return None
+                    raise FetchError(f"Request failed: {e}", url) from e
 
-                try:
-                    if response.status_code == 404:
-                        raise NotFoundError(f"404 Not Found: {url}")
-                    if response.status_code == 403:
-                        if attempt == 0:
-                            self._rebuild_session()
-                            continue
-                        self._blocked_until = time.time() + CHALLENGE_COOLDOWN
-                        logger.error(
-                            f"403 for {url} after session rebuild, pausing requests "
-                            f"for {CHALLENGE_COOLDOWN:.0f}s"
-                        )
-                        return None
-                    if response.status_code >= 500 and attempt == 0:
-                        logger.warning(f"{response.status_code} for {url}, retrying in 3s")
-                        time.sleep(3)
+                status = response.status_code
+                if status == 404:
+                    raise NotFoundError(f"404 Not Found: {url}")
+                if status == 403:
+                    if attempt == 0:
+                        self._rebuild_session()
                         continue
-                    response.raise_for_status()
-                    return response
-                except NotFoundError:
-                    raise
-                except Exception as e:
-                    logger.error(f"Request failed for {url}: {e}")
-                    return None
-            return None
+                    self._blocked_until = time.time() + CHALLENGE_COOLDOWN
+                    logger.error(
+                        f"403 for {url} after session rebuild, pausing requests for {CHALLENGE_COOLDOWN:.0f}s"
+                    )
+                    raise BlockedError("Metal Archives refused the request (403)", url)
+                if status == 429:
+                    # Rate limited: back off like a block, so callers that
+                    # retry FetchError right away do not turn this into a 403.
+                    wait = _retry_after(response) or CHALLENGE_COOLDOWN
+                    self._blocked_until = time.time() + wait
+                    logger.error(f"429 for {url}, pausing requests for {wait:.0f}s")
+                    raise BlockedError("Metal Archives is rate limiting requests (429)", url)
+                if status >= 500 and attempt == 0:
+                    logger.warning(f"{status} for {url}, retrying in 3s")
+                    time.sleep(3)
+                    continue
+                if status >= 400:
+                    raise FetchError(f"HTTP {status}", url)
+                return response
+            raise AssertionError("unreachable: the loop returns or raises")
 
     def _rebuild_session(self) -> None:
         """Drop the current session and build a fresh one after a challenge.
@@ -213,11 +233,12 @@ class MetalArchivesClient:
             crawl: If True, use the longer crawl delay between requests.
 
         Returns:
-            Parsed JSON as a dict, or None if the request failed or the
-            response could not be parsed as JSON.
+            Parsed JSON as a dict, or None for an empty body.
 
         Raises:
             NotFoundError: If the endpoint returns HTTP 404.
+            FetchError: If the request failed, or the body is not JSON (an
+                error page served with 200 reads as a failure, not as data).
         """
         text = self.get(url, params, crawl=crawl)
         if not text:
@@ -225,8 +246,7 @@ class MetalArchivesClient:
         try:
             return _extract_json(text)
         except Exception as e:
-            logger.error(f"Failed to parse JSON from {url}: {e}")
-            return None
+            raise FetchError(f"Response is not JSON: {e}", url) from e
 
     def download_image(self, url: str, output_dir: str = "./images/") -> str | None:
         """Download an image to a local file.
@@ -296,6 +316,15 @@ class MetalArchivesClient:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def _retry_after(response) -> float | None:
+    """Seconds from a numeric Retry-After header, capped at the challenge cooldown."""
+    try:
+        seconds = float(response.headers.get("Retry-After", ""))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return min(max(seconds, 1.0), CHALLENGE_COOLDOWN) if seconds > 0 else None
 
 
 def _extract_json(text: str) -> dict:

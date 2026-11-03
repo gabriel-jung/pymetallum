@@ -310,14 +310,14 @@ wheels = [
 
 [[package]]
 name = "discord-metadata"
-version = "0.1.2"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "discord-py" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/83/788319b17d4ffa8c288273663dfdfab99a8655f05186acf7f7b841448f3d/discord_metadata-0.1.2.tar.gz", hash = "sha256:50815fd2ab25b7fad0a1aa5e4d8e32d7465c901b0484de9f0942a89234df7515", size = 14541, upload-time = "2026-05-12T22:06:21.497Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/16/b61293770b4655d3bfb4e189794f7d6e49cc9edac4cedb6dcdb603078fb2/discord_metadata-0.2.0.tar.gz", hash = "sha256:007febecd8a5e57f945d15251a08e590327cce7967ab3fd584d8c747d50e9a1b", size = 19924, upload-time = "2026-11-03T11:47:03.797Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/3b/99a9438089c767198bd91adfa892099951a6314d8dc543051705e5ee3b6b/discord_metadata-0.1.2-py3-none-any.whl", hash = "sha256:579724dd5dc4db51b8a4840052d7a1f8130422e749d57a2e6947277897b13c2c", size = 16414, upload-time = "2026-05-12T22:06:22.256Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/6c/c9d461a5863cd5e9ef08835d0d237e50dc8c8935f37597ca4862fd246fe8/discord_metadata-0.2.0-py3-none-any.whl", hash = "sha256:9c2509df02f8b28b02671ee082deea613e2d5c572c0b39fbfc77263a3eb63e9d", size = 21099, upload-time = "2026-11-03T11:47:02.358Z" },
 ]
 
 [[package]]
@@ -739,7 +739,7 @@ wheels = [
 
 [[package]]
 name = "pymetallum"
-version = "0.5.11"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -773,24 +773,24 @@ discord = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "curl-cffi", specifier = ">=0.14.0" },
-    { name = "discord-metadata", marker = "extra == 'discord'", specifier = ">=0.1.2" },
+    { name = "discord-metadata", marker = "extra == 'discord'", specifier = ">=0.2.0" },
     { name = "discord-py", marker = "extra == 'discord'", specifier = ">=2.7.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "python-dotenv", marker = "extra == 'discord'", specifier = ">=1.0.0" },
-    { name = "rich-metadata", specifier = ">=0.1.8" },
+    { name = "rich-metadata", specifier = ">=0.2.0" },
 ]
 provides-extras = ["discord"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "discord-metadata", specifier = ">=0.1.2" },
+    { name = "discord-metadata", specifier = ">=0.2.0" },
     { name = "discord-py", specifier = ">=2.7.0" },
     { name = "pre-commit", specifier = ">=3.5.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "ruff", specifier = ">=0.14.3" },
 ]
 discord = [
-    { name = "discord-metadata", specifier = ">=0.1.2" },
+    { name = "discord-metadata", specifier = ">=0.2.0" },
     { name = "discord-py", specifier = ">=2.7.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
 ]
@@ -878,15 +878,15 @@ wheels = [
 
 [[package]]
 name = "rich-metadata"
-version = "0.1.8"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "loguru" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/de/f88c7737d96fba53cc54e81ca575b6603ec1007c177f507ae47b87d29444/rich_metadata-0.1.8.tar.gz", hash = "sha256:87da068520292795abfe398b8918c3718ae532ed92e2f9e1205d23f24cbd19cf", size = 19110, upload-time = "2026-05-13T09:49:04.002Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/69/916c9b26d0716f0ff0f7d8b06f03eceeef814a14af64e9a52e5012a3873c/rich_metadata-0.2.0.tar.gz", hash = "sha256:5f00e4b8e74e1ee1f45c677083b34ab52d532b51b034ce815a29e4b33e9354a5", size = 23877, upload-time = "2026-11-03T11:12:48.681Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/f9/9235e812bf8e722dc37e070818c031bd8868c20391e7b8303125a023429a/rich_metadata-0.1.8-py3-none-any.whl", hash = "sha256:402bab6c8ad2b050e144f6015498208a1fe9205aa951d78f2201539137733a77", size = 22719, upload-time = "2026-05-13T09:49:02.992Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/13/745d9b32bb3cb9484f52ef81582538e3f327a974c0681b76544ec0776b34/rich_metadata-0.2.0-py3-none-any.whl", hash = "sha256:ec1797397dceb0fb9bc2ba6f3b6e125042ecb9251d4f02ba1e432a1e4b774216", size = 26183, upload-time = "2026-11-03T11:12:47.478Z" },
 ]
 
 [[package]]

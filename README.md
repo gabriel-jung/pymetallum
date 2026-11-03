@@ -161,11 +161,13 @@ metallum --random
 ### Output modes
 
 ```bash
-metallum --band Summoning --full    # print all sections, no interaction
+metallum --band Summoning --full    # print all sections, no menu
 metallum --band Summoning --json    # dump full entity data as JSON
 metallum --upcoming --json          # works with any mode
 metallum -v ...                     # enable debug logging
 ```
+
+When a name has several exact matches, `--full` and `--json` still ask which one you mean; add a filter or use the entity's URL to skip the prompt. With `--json`, stdout carries only JSON (`[]` when nothing matched) and messages go to stderr. The exit status is 0 on success (including "no results"), 1 when a request to Metal Archives failed or the entry no longer exists, 2 for invalid flags, and 130 when a `--json` run is interrupted. With filters, `--json` returns every match; `--limit N` stops after N.
 
 ### Terminal images
 
@@ -174,7 +176,7 @@ iTerm2 or Kitty image protocol (iTerm2, Kitty, WezTerm, Mintty).
 
 ## Library
 
-All data is returned as plain dicts — use it in scripts, pipelines, or other tools.
+All data is returned as plain dicts, for use in scripts, pipelines, or other tools.
 
 ```python
 from pymetallum.core import MetalArchivesClient, BandAPI, AlbumAPI, ArtistAPI, SongAPI, LabelAPI
@@ -188,7 +190,8 @@ with MetalArchivesClient() as client:
     band = bands.get(results[0]["url"], full=True)  # includes description & similar artists
 
     # advanced search with filters
-    results, total = bands.advanced_search(genre="black metal", country="AT")
+    results, total = bands.advanced_search(genre="black metal", country="AT")  # one page
+    everything = bands.advanced_search_all(genre="black metal", country="AT")
 
     # random band
     band = bands.get_random()
@@ -212,6 +215,25 @@ with MetalArchivesClient() as client:
     # download images
     client.download_image(band["logo_url"], output_dir="./images/")
 ```
+
+### Errors
+
+`get()` raises `NotFoundError` when the page no longer exists. Any other failed request raises `FetchError` (timeouts, server errors after one retry, a body that should be JSON but is not), and its subclass `BlockedError` while Metal Archives refuses requests (a Cloudflare 403 or a 429, then a cooldown of up to two minutes during which requests fail without touching the network). Searches, listings and paged crawls raise too, so a failure never reads as an empty or shortened result. Only image bytes are skipped quietly when their download fails.
+
+```python
+from pymetallum.core import BlockedError, FetchError, NotFoundError
+
+try:
+    band = bands.get(url)
+except NotFoundError:
+    ...  # deleted: stop retrying
+except BlockedError:
+    ...  # back off for a few minutes
+except FetchError:
+    ...  # transient: retry later
+```
+
+Bulk callers that do not render images should pass `with_media=False` to `get()`: the image download costs a full rate-limited request per entity.
 
 ## License
 

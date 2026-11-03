@@ -12,6 +12,7 @@ from importlib.metadata import version
 
 __version__ = version("pymetallum")
 
+from rich.console import Console
 from rich_metadata import (
     BaseNavigator,
     DisplayEngine,
@@ -23,21 +24,24 @@ from rich_metadata import (
     SummaryField,
     TableColumn,
     configure_logging,
+    escape,
     links_line,
     list_fetcher,
     months_in_range,
     parse_date_args,
     resolve_entity_type,
+    strip_internal_keys,
 )
 
 from ..core.api import STATUS_MAP, BandAPI, LabelAPI
-from ..core.client import MetalArchivesClient, NotFoundError
+from ..core.client import BlockedError, FetchError, MetalArchivesClient, NotFoundError
 from ..core.countries import resolve_country
 from .common import (
     ENTITY_TYPES,
     LAZY_FETCHERS,
     NAME_PARAM,
     VALID_FILTERS,
+    advanced_pager,
     band_origin,
     build_filters,
     make_apis,
@@ -61,12 +65,12 @@ def _status_transform(status: str) -> str:
     color = STATUS_COLORS.get(status)
     if not status:
         return ""
-    return f"[{color}]{status}[/{color}]" if color else status
+    return f"[{color}]{escape(status)}[/{color}]" if color else escape(status)
 
 
 def _album_title(d: dict) -> str:
     """Format album header title as 'Name by Band'."""
-    return f"[bold]{d.get('name', '')}[/bold] [dim]by[/dim] {d.get('band', 'Unknown')}"
+    return f"[bold]{escape(d.get('name', ''))}[/bold] [dim]by[/dim] {escape(d.get('band', 'Unknown'))}"
 
 
 def _label_footer_sub_labels(d: dict) -> str | None:
@@ -74,7 +78,7 @@ def _label_footer_sub_labels(d: dict) -> str | None:
     subs = d.get("sub_labels")
     if not subs:
         return None
-    names = ", ".join(sub["name"] for sub in subs)
+    names = ", ".join(escape(sub["name"]) for sub in subs)
     return f"[bold]Sub-labels:[/bold] {names}"
 
 
@@ -95,7 +99,7 @@ band_def = EntityDef(
     header_fields=[
         HeaderField("Status", key="status", transform=_status_transform),
         HeaderField("Active", key="years_active"),
-        HeaderField("Origin", transform=band_origin),
+        HeaderField("Origin", transform=lambda d: escape(band_origin(d))),
         HeaderField("Genre", key="genre"),
         HeaderField("Label", key="current_label"),
         HeaderField("Themes", key="themes"),
@@ -142,7 +146,7 @@ album_def = EntityDef(
     summary=[
         SummaryField(key="name", style="bold"),
         SummaryField(prefix="by ", key="band", fallback="Unknown"),
-        SummaryField(key="release_date", style="dim", transform=lambda v: f"({v})" if v else ""),
+        SummaryField(key="release_date", style="dim", transform=lambda v: f"({escape(v)})" if v else ""),
     ],
     header_fields=[
         HeaderField("Type", key="album_type"),
@@ -211,7 +215,7 @@ artist_def = EntityDef(
         SummaryField(
             key="real_name",
             style="dim",
-            transform=lambda v: f"({v})" if v else "",
+            transform=lambda v: f"({escape(v)})" if v else "",
             fallback="N/A",
         ),
         SummaryField(key="country"),
@@ -285,7 +289,7 @@ label_def = EntityDef(
         HeaderField("Phone", key="phone"),
         HeaderField("Status", key="status"),
         HeaderField("Founded", key="founding_date"),
-        HeaderField("Styles", key="styles", transform=styles_transform),
+        HeaderField("Styles", key="styles", transform=lambda v: escape(styles_transform(v))),
         HeaderField("Website", key="website"),
         HeaderField("Email", key="email"),
         HeaderField(
@@ -322,6 +326,16 @@ label_def = EntityDef(
 engine = DisplayEngine()
 engine.register(band_def, album_def, artist_def, song_def, label_def)
 console = engine.console
+err_console = Console(stderr=True)  # messages, so --json output on stdout stays parseable
+
+# Exit statuses
+EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_INTERRUPTED = 0, 1, 2, 130
+
+
+def _print_json(data) -> None:
+    """Print data as JSON on stdout, without internal ``_`` keys (same shape as single entities)."""
+    print(json.dumps(strip_internal_keys(data), indent=2))
+
 
 _ALL_FILTER_FLAGS = sorted(set().union(*VALID_FILTERS.values()))
 
@@ -432,6 +446,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show all sections at once (no interactive menu)",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        help="With --json and filters, stop after N results (default: all)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Show debug logs")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -447,7 +467,7 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
     Returns None and prints errors on invalid input.
     """
     if entity_type not in VALID_FILTERS:
-        console.print(
+        err_console.print(
             f"[red]Advanced search not available for {entity_type}s. Use --band, --album, or --song.[/red]"
         )
         return None
@@ -460,13 +480,13 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
     ]
     if errors:
         for err in errors:
-            console.print(f"[red]{err}[/red]")
+            err_console.print(f"[red]{err}[/red]")
         return None
 
     # CLI-specific validation before delegating to shared builder
     country = getattr(args, "country", None)
     if country and not resolve_country(country):
-        console.print(
+        err_console.print(
             f"[red]Unknown country '{country}'. Use an ISO code "
             f"(e.g. FR, NO, US) or a full country name.\n"
             f"For regions/cities, use --location instead.[/red]"
@@ -475,7 +495,9 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
 
     status = getattr(args, "status", None)
     if status and not STATUS_MAP.get(status.lower()):
-        console.print(f"[red]Unknown status '{status}'. Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]")
+        err_console.print(
+            f"[red]Unknown status '{status}'. Valid: {', '.join(dict.fromkeys(STATUS_MAP))}[/red]"
+        )
         return None
 
     return build_filters(
@@ -494,54 +516,58 @@ def _build_advanced_filters(args, entity_type: str) -> dict | None:
 # ─── Search/browse commands ───────────────────────────────────────────────────
 
 
-def _run_search(navigator, query, entity_type, args):
+def _run_search(navigator, query, entity_type, args) -> int:
     """Search by name, select a result, then display or navigate."""
     search_types = [entity_type] if entity_type else ENTITY_TYPES
-    navigator.search_and_navigate(
+    shown = navigator.search_and_navigate(
         query,
         search_types,
         exact_first=not args.search,
         json_output=args.json,
         full=args.full,
     )
+    if args.json and shown is False:
+        print("[]")  # nothing to show; a failed request raises instead
+    return EXIT_OK
 
 
-def _run_advanced_search(navigator, entity_type, filters, args):
+def _run_advanced_search(navigator, entity_type, filters, args) -> int:
     """Run a filtered search and browse results with pagination."""
     api = navigator.apis[entity_type]
     filter_desc = ", ".join(f"{k}={v}" for k, v in filters.items())
 
     if args.json:
-        with console.status(f"Searching {entity_type}s ({filter_desc})..."):
-            results, _ = api.advanced_search(start=0, count=200, **filters)
+        with err_console.status(f"Searching {entity_type}s ({filter_desc})..."):
+            results = api.advanced_search_all(limit=args.limit, **filters)
         if not results:
-            console.print(f"[yellow]No {entity_type}s found matching your criteria.[/yellow]")
-            return
-        print(json.dumps(results, indent=2))
-        return
+            err_console.print(f"[yellow]No {entity_type}s found matching your criteria.[/yellow]")
+        _print_json(results)
+        return EXIT_OK
 
     navigator.browse(
-        fetch_page=lambda s, c: api.advanced_search(start=s, count=c, **filters),
+        fetch_page=advanced_pager(api, filters),
         title=f"{entity_type.capitalize()}s ({filter_desc})",
         full=args.full,
     )
+    return EXIT_OK
 
 
-def _run_listing(navigator, entity_type, args):
+def _run_listing(navigator, entity_type, args) -> int:
     """Handle --recent/--new/--modified/--upcoming listing commands."""
     api = navigator.apis[entity_type]
 
     if args.upcoming:
         if args.month:
-            console.print("[yellow]--month has no effect with --upcoming; use --from/--to instead.[/yellow]")
+            err_console.print(
+                "[yellow]--month has no effect with --upcoming; use --from/--to instead.[/yellow]"
+            )
         if args.json:
-            with console.status("Fetching upcoming releases..."):
+            with err_console.status("Fetching upcoming releases..."):
                 releases = api.fetch_upcoming(from_date=args.from_date, to_date=args.to_date)
             if not releases:
-                console.print("[yellow]No upcoming releases found.[/yellow]")
-                return
-            print(json.dumps(releases, indent=2))
-            return
+                err_console.print("[yellow]No upcoming releases found.[/yellow]")
+            _print_json(releases)
+            return EXIT_OK
         navigator.browse(
             fetch_page=lambda s, c: api.fetch_upcoming_page(
                 s,
@@ -552,12 +578,12 @@ def _run_listing(navigator, entity_type, args):
             title="Upcoming releases",
             full=args.full,
         )
-        return
+        return EXIT_OK
 
     # --recent / --new / --modified
-    parsed = parse_date_args(args, console)
+    parsed = parse_date_args(args, err_console)
     if parsed is None:
-        return
+        return EXIT_USAGE
     from_date, to_date = parsed
 
     modes = (
@@ -569,8 +595,8 @@ def _run_listing(navigator, entity_type, args):
     )
 
     if (from_date or to_date) and args.month:
-        console.print("[red]Cannot use --month with --from/--to.[/red]")
-        return
+        err_console.print("[red]Cannot use --month with --from/--to.[/red]")
+        return EXIT_USAGE
 
     if from_date or to_date:
         from_date = from_date or date.today().replace(day=1)
@@ -578,13 +604,13 @@ def _run_listing(navigator, entity_type, args):
         months = months_in_range(from_date, to_date)
 
         fetched = {}
-        with console.status(f"Fetching {entity_type}s ({from_date} to {to_date})..."):
+        with err_console.status(f"Fetching {entity_type}s ({from_date} to {to_date})..."):
             for mode in modes:
                 fetched[mode] = api.fetch_recent_filtered(mode, months, from_date, to_date)
 
         if args.json:
-            print(json.dumps(fetched, indent=2))
-            return
+            _print_json(fetched)
+            return EXIT_OK
 
         browsers = [
             (mode_label(mode, entity_type, len(fetched[mode])), list_fetcher(fetched[mode])) for mode in modes
@@ -594,21 +620,21 @@ def _run_listing(navigator, entity_type, args):
 
         if args.json:
             fetched = {}
-            with console.status("Fetching all results..."):
+            with err_console.status("Fetching all results..."):
                 for mode in modes:
                     fetched[mode] = (
                         api.fetch_recently_created(month)
                         if mode == "created"
                         else api.fetch_recently_modified(month)
                     )
-            print(json.dumps(fetched, indent=2))
-            return
+            _print_json(fetched)
+            return EXIT_OK
 
         # Only the record count is used here. The endpoint ignores the page-size
         # parameter and always sends a full block, so there is nothing to save
         # by asking for fewer rows.
         totals = {}
-        with console.status(f"Fetching recent {entity_type}s ({month or 'this month'})..."):
+        with err_console.status(f"Fetching recent {entity_type}s ({month or 'this month'})..."):
             for mode in modes:
                 _, totals[mode] = api.fetch_recent_page(mode, month)
 
@@ -621,6 +647,7 @@ def _run_listing(navigator, entity_type, args):
         ]
 
     navigator.browse_sources(browsers, full=args.full)
+    return EXIT_OK
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -631,12 +658,21 @@ def _make_navigator(client: MetalArchivesClient) -> BaseNavigator:
     return BaseNavigator(engine, apis=make_apis(client), lazy_fetchers=LAZY_FETCHERS)
 
 
-def main():
-    """CLI entry point."""
+def main() -> int:
+    """CLI entry point.
+
+    Returns the exit status: 0 done (including "no results"), 1 a request
+    failed or the entry is gone, 2 invalid flags, 130 interrupted with --json.
+    """
     parser = _build_parser()
     args = parser.parse_args()
 
     configure_logging(args.verbose)
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be at least 1")
+    if args.json:
+        # Prompts and messages from the navigator go to stderr; stdout carries only JSON.
+        engine.console = err_console
     entity_type, name_query = resolve_entity_type(args, ENTITY_TYPES)
 
     has_filters = any(getattr(args, f, None) for f in _ALL_FILTER_FLAGS)
@@ -646,53 +682,55 @@ def main():
 
         try:
             if args.random:
-                with console.status("Fetching random band..."):
+                with err_console.status("Fetching random band..."):
                     band = navigator.apis["band"].get_random(
                         full=args.full or args.json,
                     )
                 if not band:
-                    console.print("[red]Could not fetch random band.[/red]")
-                    return
+                    err_console.print("[red]Could not fetch random band.[/red]")
+                    return EXIT_FAILED
                 navigator.display_or_navigate(
                     band,
                     json_output=args.json,
                     full=args.full,
                 )
-                return
+                return EXIT_OK
 
             elif args.upcoming:
                 if entity_type and entity_type != "album":
-                    console.print(f"[yellow]--upcoming only lists albums; ignoring --{entity_type}.[/yellow]")
-                _run_listing(navigator, "album", args)
-                return
+                    err_console.print(
+                        f"[yellow]--upcoming only lists albums; ignoring --{entity_type}.[/yellow]"
+                    )
+                return _run_listing(navigator, "album", args)
 
             elif args.recent or args.new or args.modified:
                 listing_type = entity_type or "band"
                 if listing_type not in ("band", "label"):
-                    console.print(
+                    err_console.print(
                         "[red]--recent is only available for bands and labels. "
                         "Use --band --recent or --label --recent.[/red]"
                     )
-                    return
-                _run_listing(navigator, listing_type, args)
-                return
+                    return EXIT_USAGE
+                return _run_listing(navigator, listing_type, args)
 
             elif has_filters:
                 search_type = entity_type or "band"
 
                 filters = _build_advanced_filters(args, search_type)
                 if filters is None:
-                    return
+                    return EXIT_USAGE
 
-                if name_query and search_type in NAME_PARAM:
-                    filters[NAME_PARAM[search_type]] = name_query
+                # `metallum Summoning --genre ...` names the band positionally.
+                name = name_query or args.query
+                if name:
+                    filters[NAME_PARAM[search_type]] = name
 
-                _run_advanced_search(navigator, search_type, filters, args)
+                return _run_advanced_search(navigator, search_type, filters, args)
 
             elif entity_type and name_query:
-                _run_search(navigator, name_query, entity_type, args)
+                return _run_search(navigator, name_query, entity_type, args)
             elif args.query:
-                _run_search(navigator, args.query, None, args)
+                return _run_search(navigator, args.query, None, args)
             else:
                 parser.error(
                     "Provide a search query or use filters.\n"
@@ -702,8 +740,21 @@ def main():
                     "  metallum --album --genre doom --year 1990-1995"
                 )
         except (QuitSignal, KeyboardInterrupt):
-            pass
+            # Ctrl+C is how the interactive browser quits; in a --json run it
+            # means the output is incomplete.
+            return EXIT_INTERRUPTED if args.json else EXIT_OK
         except NotFoundError:
-            # Entity fetches are already softened by MissingTolerantAPI; this
-            # covers the random and listing paths, which call the API directly.
-            console.print("[red]That entry no longer exists on Metal Archives.[/red]")
+            # Entity fetches are softened by MissingTolerantAPI; this covers a
+            # 404 on a page fetched directly (for example a deleted label row).
+            err_console.print("[red]That entry no longer exists on Metal Archives.[/red]")
+            return EXIT_FAILED
+        except BlockedError:
+            err_console.print(
+                "[red]Metal Archives is refusing requests right now (Cloudflare challenge).[/red]\n"
+                "[dim]Wait a couple of minutes and try again.[/dim]"
+            )
+            return EXIT_FAILED
+        except FetchError as e:
+            err_console.print(f"[red]Request to Metal Archives failed: {escape(e)}[/red]")
+            return EXIT_FAILED
+    return EXIT_OK

@@ -131,6 +131,65 @@ class BandPageParser(BasePageParser):
         return members
 
 
+def parse_tracklist(soup: BeautifulSoup) -> list[dict[str, Any]]:
+    """Parse the album tracklist with song IDs, durations, and lyrics flags.
+
+    Scoped to the tracklist table: ``tr.odd``/``tr.even`` are used across
+    the whole page (the review list alone accounts for most of them), so a
+    page-wide selector would rely entirely on the per-row shape guards.
+
+    Multi-disc and multi-side releases mark boundaries with ``tr.discRow``
+    and ``tr.sideRow`` header rows, and restart track numbering at each
+    disc. The current heading is attached to every following track so those
+    repeated numbers stay unambiguous.
+    """
+    tracks = []
+    disc = None
+    side = None
+    for row in soup.select("table.table_lyrics tr"):
+        classes = row.get("class", [])
+        if "discRow" in classes:
+            disc = safe_get_text(row)
+            side = None
+            continue
+        if "sideRow" in classes:
+            side = safe_get_text(row)
+            continue
+
+        cells = row.find_all("td")
+        if len(cells) < 4 or not cells[0].text.strip().endswith("."):
+            continue
+
+        anchor = cells[0].find("a", class_="anchor")
+        song_id = anchor.get("name") if anchor else None
+
+        has_lyrics = bool(cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton")))
+        note = ""
+        em_tag = cells[3].find("em")
+        if em_tag:
+            note = safe_get_text(em_tag)
+
+        track = {
+            "name": safe_get_text(cells[1]),
+            "track_number": safe_get_text(cells[0]).rstrip("."),
+            "duration": safe_get_text(cells[2]),
+            "song_id": song_id,
+            "has_lyrics": has_lyrics,
+        }
+        if song_id:
+            track["_type"] = "song"
+        if note:
+            track["note"] = note
+        if disc:
+            track["disc"] = disc
+        if side:
+            track["side"] = side
+
+        tracks.append(track)
+
+    return tracks
+
+
 class AlbumPageParser(BasePageParser):
     """Parser for album detail pages.
 
@@ -245,62 +304,7 @@ class AlbumPageParser(BasePageParser):
         return reviews
 
     def _parse_tracklist(self) -> list[dict[str, Any]]:
-        """Parse the album tracklist with song IDs, durations, and lyrics flags.
-
-        Scoped to the tracklist table: ``tr.odd``/``tr.even`` are used across
-        the whole page (the review list alone accounts for most of them), so a
-        page-wide selector would rely entirely on the per-row shape guards.
-
-        Multi-disc and multi-side releases mark boundaries with ``tr.discRow``
-        and ``tr.sideRow`` header rows, and restart track numbering at each
-        disc. The current heading is attached to every following track so those
-        repeated numbers stay unambiguous.
-        """
-        tracks = []
-        disc = None
-        side = None
-        for row in self.soup.select("table.table_lyrics tr"):
-            classes = row.get("class", [])
-            if "discRow" in classes:
-                disc = safe_get_text(row)
-                side = None
-                continue
-            if "sideRow" in classes:
-                side = safe_get_text(row)
-                continue
-
-            cells = row.find_all("td")
-            if len(cells) < 4 or not cells[0].text.strip().endswith("."):
-                continue
-
-            anchor = cells[0].find("a", class_="anchor")
-            song_id = anchor.get("name") if anchor else None
-
-            has_lyrics = bool(cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton")))
-            note = ""
-            em_tag = cells[3].find("em")
-            if em_tag:
-                note = safe_get_text(em_tag)
-
-            track = {
-                "name": safe_get_text(cells[1]),
-                "track_number": safe_get_text(cells[0]).rstrip("."),
-                "duration": safe_get_text(cells[2]),
-                "song_id": song_id,
-                "has_lyrics": has_lyrics,
-            }
-            if song_id:
-                track["_type"] = "song"
-            if note:
-                track["note"] = note
-            if disc:
-                track["disc"] = disc
-            if side:
-                track["side"] = side
-
-            tracks.append(track)
-
-        return tracks
+        return parse_tracklist(self.soup)
 
     def _parse_lineup(self) -> dict[str, list[dict[str, Any]]]:
         """Parse album lineup, handling split albums with multiple bands."""
@@ -533,33 +537,13 @@ class SongPageParser(BasePageParser):
         logger.debug(f"Looking for song_id: {self.song_id}")
         logger.debug(f"Looking for target_song_name: {self.target_song_name}")
 
-        for row in self.soup.select("table.display.table_lyrics tbody tr"):
-            cells = row.find_all("td")
-            if len(cells) < 3:
-                continue
-
-            anchor = cells[0].find("a", class_="anchor")
-            if not anchor:
-                continue
-
-            track_id = anchor.get("name")
-            track = {
-                "name": safe_get_text(cells[1]),
-                "duration": safe_get_text(cells[2]),
-                "track_number": safe_get_text(cells[0]).rstrip("."),
-                "has_lyrics": bool(
-                    len(cells) > 3 and cells[3].find("a", id=lambda x: x and x.startswith("lyricsButton"))
-                ),
-                "song_id": track_id,
-            }
-
+        target = (self.target_song_name or "").lower().strip()
+        for track in parse_tracklist(self.soup):
+            track_id = track.get("song_id")
             if self.song_id and track_id == self.song_id:
                 logger.debug(f"Matched by song_id: {self.song_id}")
                 return track
-
-            if self.target_song_name and (
-                track["name"].lower().strip() == self.target_song_name.lower().strip()
-            ):
+            if target and track["name"].lower().strip() == target:
                 self.song_id = track_id
                 logger.debug(f"Matched by name: '{track['name']}'")
                 return track
