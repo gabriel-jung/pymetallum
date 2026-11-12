@@ -56,6 +56,17 @@ def _html_text(s: str) -> str:
     return normalize_text(BeautifulSoup(s, "html.parser").get_text())
 
 
+def _letter_path(letter: str) -> str:
+    """Return the URL path segment for an alphabetical listing letter.
+
+    Metal Archives codes the "names starting with a digit" letter as ``NBR``.
+    A literal ``#`` would start a URL fragment and drop the letter from the
+    request, so it is translated; every other value is percent-quoted as a
+    single path segment.
+    """
+    return "NBR" if letter == "#" else quote(letter, safe="")
+
+
 @cache
 def _parser_kwargs(parser_class: Callable) -> frozenset[str]:
     return frozenset(inspect.signature(parser_class.__init__).parameters) - {"self"}
@@ -883,16 +894,17 @@ class BandAPI(BaseAPI):
         """Fetch all bands starting with a given letter from the alphabetical listing.
 
         Uses the paginated ``/browse/ajax-letter/`` endpoint, fetching in
-        batches until all bands are retrieved. Special letters ``#`` (numbers)
-        and ``~`` (non-Latin) are supported.
+        batches until all bands are retrieved. Besides A-Z, ``#`` (or its
+        Metal Archives code ``NBR``) lists names starting with a digit and
+        ``~`` lists non-Latin names.
 
         This method uses the crawl delay (3s) between requests to avoid
         overloading the server, as it can generate many requests for popular
         letters.
 
         Args:
-            letter: Single letter (A-Z), ``#`` for numbers, or ``~`` for
-                non-Latin characters.
+            letter: Single letter (A-Z), ``#`` or ``NBR`` for names starting
+                with a digit, or ``~`` for non-Latin characters.
             batch_size: Number of bands to request per page (max 500).
             verbose: If True, log progress updates.
 
@@ -900,7 +912,7 @@ class BandAPI(BaseAPI):
             List of band dicts with ``name``, ``url``, ``id``, ``country``,
             ``genre``, and ``status``.
         """
-        url = f"{self._base_url}/browse/ajax-letter/l/{letter}/json/1"
+        url = f"{self._base_url}/browse/ajax-letter/l/{_letter_path(letter)}/json/1"
 
         def fetch_page(start: int) -> tuple[list[dict[str, Any]], int, int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
@@ -1415,8 +1427,8 @@ class LabelAPI(BaseAPI):
         Uses the paginated ``/label/ajax-list/`` endpoint.
 
         Args:
-            letter: Single letter (A-Z), ``#`` for numbers, or ``~`` for
-                non-Latin characters.
+            letter: Single letter (A-Z), ``#`` or ``NBR`` for names starting
+                with a digit, or ``~`` for non-Latin characters.
             batch_size: Number of labels to request per page (server caps at 200).
             verbose: If True, log progress updates.
 
@@ -1424,7 +1436,7 @@ class LabelAPI(BaseAPI):
             List of label dicts with ``name``, ``url``, ``id``, ``country``,
             ``status``, and ``specialisation``.
         """
-        url = f"{self._base_url}/label/ajax-list/l/{letter}/json/1"
+        url = f"{self._base_url}/label/ajax-list/l/{_letter_path(letter)}/json/1"
 
         def fetch_page(start: int) -> tuple[list[dict[str, Any]], int, int]:
             params = {"sEcho": 0, "iDisplayStart": start, "iDisplayLength": batch_size}
