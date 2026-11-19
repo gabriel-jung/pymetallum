@@ -121,18 +121,22 @@ class BaseAPI:
     # softer behaviour wrap the API instead; see MissingTolerantAPI in
     # app/common.py.
 
-    def _get(self, url: str, params: dict | None = None, crawl: bool = False) -> str | None:
+    def _get(
+        self, url: str, params: dict | None = None, crawl: bool = False, timeout: float | None = None
+    ) -> str | None:
         """Fetch a page, returning None if it does not exist."""
         try:
-            return self._client.get(url, params, crawl=crawl)
+            return self._client.get(url, params, crawl=crawl, timeout=timeout)
         except NotFoundError:
             logger.debug(f"404 for {url}")
             return None
 
-    def _get_json(self, url: str, params: dict | None = None, crawl: bool = False) -> dict | None:
+    def _get_json(
+        self, url: str, params: dict | None = None, crawl: bool = False, timeout: float | None = None
+    ) -> dict | None:
         """Fetch a JSON endpoint, returning None if it does not exist."""
         try:
-            return self._client.get_json(url, params, crawl=crawl)
+            return self._client.get_json(url, params, crawl=crawl, timeout=timeout)
         except NotFoundError:
             logger.debug(f"404 for {url}")
             return None
@@ -157,6 +161,7 @@ class BaseAPI:
         months: list[str],
         from_date: date | None = None,
         to_date: date | None = None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch recent items across months, filtering by date range.
 
@@ -169,6 +174,7 @@ class BaseAPI:
             months: List of ``"YYYY-MM"`` strings to fetch.
             from_date: Inclusive start date, or None for no lower bound.
             to_date: Inclusive end date, or None for no upper bound.
+            timeout: Seconds to wait for each attempt (default: the client's).
 
         Returns:
             List of item dicts matching the date range.
@@ -177,9 +183,9 @@ class BaseAPI:
         for month in months:
             year = int(month.split("-")[0])
             batch = (
-                self.fetch_recently_created(month)
+                self.fetch_recently_created(month, timeout=timeout)
                 if mode == "created"
-                else self.fetch_recently_modified(month)
+                else self.fetch_recently_modified(month, timeout=timeout)
             )
             if from_date or to_date:
                 for item in batch:
@@ -201,6 +207,7 @@ class BaseAPI:
         month: str | None = None,
         start: int = 0,
         count: int = 200,
+        timeout: float | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Fetch a single page of recently created/modified items.
 
@@ -217,15 +224,16 @@ class BaseAPI:
             month: Month in ``YYYY-MM`` format. Defaults to current month.
             start: Offset into results (for pagination).
             count: Page size.
+            timeout: Seconds to wait for each attempt (default: the client's).
 
         Returns:
             Tuple of (list of item dicts, total matching records).
         """
-        items, total, _ = self._recent_window(mode, month, start, count)
+        items, total, _ = self._recent_window(mode, month, start, count, timeout)
         return items, total
 
     def _recent_window(
-        self, mode: str, month: str | None, start: int, count: int
+        self, mode: str, month: str | None, start: int, count: int, timeout: float | None = None
     ) -> tuple[list[dict[str, Any]], int, int]:
         """``fetch_recent_page`` plus the raw row count, for ``_paginate``."""
         if not self._ARCHIVE_ENDPOINT or not self._ARCHIVE_ROW_PARSER:
@@ -242,7 +250,7 @@ class BaseAPI:
                 "iDisplayStart": block_start,
                 "iDisplayLength": self._ARCHIVE_BLOCK,
             }
-            data = self._get_json(url, params, crawl=True)
+            data = self._get_json(url, params, crawl=True, timeout=timeout)
             if not data:
                 return [], 0
             return data.get("aaData", []), data.get("iTotalRecords", 0)
@@ -255,27 +263,36 @@ class BaseAPI:
         self,
         month: str | None = None,
         batch_size: int = 200,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch all items recently created for a given month."""
-        return self._fetch_all_archive("created", month, batch_size)
+        """Fetch all items recently created for a given month.
+
+        ``timeout`` overrides the client's per-attempt timeout for this listing.
+        """
+        return self._fetch_all_archive("created", month, batch_size, timeout)
 
     def fetch_recently_modified(
         self,
         month: str | None = None,
         batch_size: int = 200,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Fetch all items recently modified for a given month."""
-        return self._fetch_all_archive("modified", month, batch_size)
+        """Fetch all items recently modified for a given month.
+
+        ``timeout`` overrides the client's per-attempt timeout for this listing.
+        """
+        return self._fetch_all_archive("modified", month, batch_size, timeout)
 
     def _fetch_all_archive(
         self,
         mode: str,
         month: str | None,
         batch_size: int,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch all items from an archive listing (created or modified)."""
         return self._paginate(
-            lambda start: self._recent_window(mode, month, start, batch_size),
+            lambda start: self._recent_window(mode, month, start, batch_size, timeout),
             batch_size=batch_size,
             label=f"{mode} items for {month}",
             verbose=True,

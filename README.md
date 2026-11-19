@@ -216,9 +216,11 @@ with MetalArchivesClient() as client:
     client.download_image(band["logo_url"], output_dir="./images/")
 ```
 
+`MetalArchivesClient` takes keyword arguments for its timeout, rate limits, retries and block cooldown; see its docstring. The request methods and the recent-items listings (`fetch_recently_*`, `fetch_recent_page`, `fetch_recent_filtered`) also take a per-call `timeout`, for raising it on one listing without changing every other fetch. Timeouts apply to each attempt, so a call that retries can take a multiple of them.
+
 ### Errors
 
-`get()` raises `NotFoundError` when the page no longer exists. Any other failed request raises `FetchError` (timeouts, server errors after one retry, a body that should be JSON but is not), and its subclass `BlockedError` while Metal Archives refuses requests (a Cloudflare 403 or a 429, then a cooldown of up to two minutes during which requests fail without touching the network). Searches, listings and paged crawls raise too, so a failure never reads as an empty or shortened result. Only image bytes are skipped quietly when their download fails.
+`get()` raises `NotFoundError` when the page no longer exists. Any other failed request raises `FetchError` (timeouts, server errors after the client's retries, a body that should be JSON but is not), and its subclass `BlockedError` while Metal Archives refuses requests (a Cloudflare 403 or a 429, then a cooldown, two minutes by default, during which requests fail without touching the network). Searches, listings and paged crawls raise too, so a failure never reads as an empty or shortened result. Only image bytes are skipped quietly when their download fails.
 
 ```python
 from pymetallum.core import BlockedError, FetchError, NotFoundError
